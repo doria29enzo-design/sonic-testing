@@ -1,0 +1,1816 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sonic-Style Physics Engine Prototype</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#111;font-family:Arial,sans-serif}
+  canvas{display:block;width:100vw;height:100vh;image-rendering:auto;background:#6fc7ff}
+  #help{position:fixed;left:14px;top:12px;color:white;text-shadow:2px 2px #000;font-weight:bold;line-height:1.5;pointer-events:none}
+  #status{position:fixed;right:14px;top:12px;color:white;text-shadow:2px 2px #000;font-weight:bold;text-align:right;pointer-events:none}
+
+  #editorUI{position:fixed;left:10px;right:10px;top:10px;z-index:20;display:none;color:#fff;font:700 12px monospace;text-shadow:1px 1px #000;pointer-events:none}
+  #editorUI .bar{display:flex;gap:6px;align-items:center;flex-wrap:wrap;background:rgba(8,12,18,.94);border:2px solid #fff;padding:7px;pointer-events:auto;box-shadow:0 4px 18px rgba(0,0,0,.45)}
+  #editorUI button,#editorUI select{font:700 12px monospace;background:#202a35;color:#fff;border:1px solid #9fb0c0;padding:5px 7px;cursor:pointer}
+  #editorUI button.active{background:#e0b52b;color:#111;border-color:#fff}
+  #editorUI button:hover{background:#344657}
+  #editorUI .era{font-weight:900;padding:5px 8px;border:1px solid #7f8c99;cursor:pointer;background:#17212b;color:#fff}
+  #editorUI .era.active{color:#fff;border-color:#fff} #editorUI .era[data-era="past"].active{background:#a46b3c} #editorUI .era[data-era="present"].active{background:#3aa85a} #editorUI .era[data-era="badFuture"].active{background:#4b5559} #editorUI .era[data-era="goodFuture"].active{background:#35a9a8}
+  #editorUI .sep{width:1px;height:22px;background:#607080;display:inline-block;margin:0 2px}
+  #editorHelp{margin-top:6px;background:rgba(8,12,18,.86);border:1px solid #9fb0c0;padding:6px;display:inline-block}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="help">
+  ← → Move / roll &nbsp; ↓ Crouch<br>
+  Space = Jump / Homing Attack (target required)<br>
+  Z = Spin Dash / Super Peel Out &nbsp; R = Reset<br>  Air Spin Dash = hold Z, aim with arrows, release Z<br>
+  R = Reset
+</div>
+<div id="status"></div>
+<div id="editorUI">
+  <div class="bar">
+    <b>LEVEL EDITOR</b>
+    <span class="sep"></span><b>ERA:</b>
+    <button class="era" data-era="past" title="Edit Past terrain, signs, objects, and palette">PAST</button><button class="era active" data-era="present" title="Edit Present terrain, signs, objects, and palette">PRESENT</button><button class="era" data-era="badFuture" title="Edit Bad Future terrain, signs, objects, and palette">BAD FUTURE</button><button class="era" data-era="goodFuture" title="Edit Good Future terrain, signs, objects, and palette">GOOD FUTURE</button>
+    <span class="sep"></span>
+    <button data-mode="move">MOVE POINTS</button><button data-mode="signs">EDIT SIGNS</button><button data-mode="add">ADD POINT</button><button data-mode="delete">DELETE POINT</button><button data-mode="gap">MAKE GAP</button><button data-mode="object">PLACE OBJECT</button><button data-mode="eraseObject">ERASE OBJECT</button>
+    <select id="editorSection"><option value="0">TERRAIN 1</option><option value="1">TERRAIN 2</option></select>
+    <select id="editorObject"><option value="loop">Loop</option><option value="bridge">Bridge</option><option value="generator">Generator</option><option value="generatorRock">Generator + Rock</option><option value="barrier">Barrier Block</option><option value="future">Future Sign</option><option value="past">Past Sign</option><option value="forest">Forest Start</option></select>
+    <button id="editorUndo">UNDO</button><button id="editorSave">SAVE</button><button id="editorLoad">LOAD</button><button id="editorExport">EXPORT JSON</button><button id="editorPlay">PLAYTEST</button><button id="editorClose">CLOSE (E)</button>
+  </div>
+  <div id="editorHelp">Drag points to shape terrain. EDIT SIGNS lets you drag existing Past/Future signs; the selected era changes the preview palette and its saved scene. Right-drag / WASD / arrows = free camera. Mouse wheel = pan. Select an ERA to edit its own terrain, signs, objects, and visual palette. Bridges have collision. Barrier Blocks are solid obstacles. Shift+click = add point. E toggles editor.</div>
+  <div id="musicPanel" style="margin-top:6px;background:rgba(8,12,18,.94);border:1px solid #9fb0c0;padding:6px;display:inline-flex;gap:7px;align-items:center;pointer-events:auto"><b>MUSIC</b><button id="musicToggle">MUSIC: ON</button><label>VOL <input id="musicVolume" type="range" min=0 max=1 step=.01 value=.35></label><span id="musicName">PRESENT</span></div>
+</div>
+
+<script>
+"use strict";
+
+/*
+  SONIC-STYLE PHYSICS ENGINE
+  --------------------------
+  A self-contained browser prototype focused on momentum-based platforming.
+
+  Included:
+  - acceleration/deceleration and friction
+  - slope acceleration
+  - rolling
+  - jumping with momentum
+  - loop-de-loop using a spline-like circular track
+  - automatic ground/track following
+  - wall/ceiling traversal inside loops
+  - Spin Dash
+  - Peel Out
+  - mid-air Spin Dash
+  - Homing Attack toward nearby targets
+  - springs
+  - rings
+  - checkpoints
+  - camera tracking
+  - simple level editor-style map data
+*/
+
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+const status = document.getElementById("status");
+
+let W=innerWidth,H=innerHeight,DPR=Math.min(devicePixelRatio||1,2);
+function resize(){
+  W=innerWidth; H=innerHeight; DPR=Math.min(devicePixelRatio||1,2);
+  canvas.width=W*DPR; canvas.height=H*DPR;
+  canvas.style.width=W+"px"; canvas.style.height=H+"px";
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+}
+addEventListener("resize",resize); resize();
+
+const keys=new Set();
+const pressed=new Set();
+addEventListener("keydown",e=>{
+  if(["ArrowLeft","ArrowRight","ArrowDown","ArrowUp"," ","z","Z","x","X","r","R"].includes(e.key))
+    e.preventDefault();
+  if(!keys.has(e.key)) pressed.add(e.key);
+  keys.add(e.key);
+});
+addEventListener("keyup",e=>keys.delete(e.key));
+
+const down=k=>keys.has(k);
+const hit=k=>pressed.has(k);
+
+const world={
+  width:22000,
+  groundY:520,
+  // Compact Sonic-CD-style layout: a main route with occasional upper/lower
+  // branches, speed lanes, loops and exploration pockets instead of a carpet of platforms.
+  solids:[
+    {x:-500,y:520,w:650,h:500},
+    {x:150,y:500,w:430,h:520},
+    {x:700,y:455,w:360,h:565},
+    {x:1120,y:520,w:360,h:500},
+    {x:1540,y:445,w:380,h:575},
+    {x:1980,y:520,w:420,h:500},
+    {x:2460,y:470,w:330,h:550},
+    {x:2860,y:520,w:520,h:500},
+    {x:3460,y:445,w:420,h:575},
+    {x:3960,y:520,w:440,h:500},
+    {x:4480,y:455,w:420,h:565},
+    {x:5000,y:520,w:420,h:500},
+    {x:5500,y:460,w:400,h:560},
+    {x:5980,y:520,w:420,h:500},
+    {x:6480,y:455,w:430,h:565},
+    {x:6990,y:520,w:430,h:500},
+    {x:7500,y:470,w:360,h:550},
+    {x:7950,y:520,w:520,h:500},
+    {x:8540,y:445,w:390,h:575},
+    {x:9020,y:520,w:430,h:500},
+    {x:9530,y:455,w:420,h:565},
+    {x:10030,y:520,w:440,h:500},
+    {x:10550,y:470,w:360,h:550},
+    {x:11010,y:520,w:520,h:500},
+    {x:11600,y:450,w:500,h:570}
+  ],
+  slopes:[
+    {x1:580,y1:500,x2:700,y2:455},
+    {x1:1060,y1:455,x2:1120,y2:520},
+    {x1:1480,y1:520,x2:1540,y2:445},
+    {x1:1920,y1:445,x2:1980,y2:520},
+    {x1:2400,y1:520,x2:2460,y2:470},
+    {x1:2790,y1:470,x2:2860,y2:520},
+    {x1:3380,y1:520,x2:3460,y2:445},
+    {x1:3880,y1:445,x2:3960,y2:520},
+    {x1:4400,y1:520,x2:4480,y2:455},
+    {x1:4920,y1:455,x2:5000,y2:520},
+    {x1:5420,y1:520,x2:5500,y2:460},
+    {x1:5900,y1:460,x2:5980,y2:520},
+    {x1:6410,y1:520,x2:6480,y2:455},
+    {x1:6910,y1:455,x2:6990,y2:520},
+    {x1:7440,y1:520,x2:7500,y2:470},
+    {x1:7860,y1:470,x2:7950,y2:520},
+    {x1:8460,y1:520,x2:8540,y2:445},
+    {x1:8930,y1:445,x2:9020,y2:520},
+    {x1:9450,y1:520,x2:9530,y2:455},
+    {x1:9970,y1:455,x2:10030,y2:520},
+    {x1:10490,y1:520,x2:10550,y2:470},
+    {x1:10910,y1:470,x2:11010,y2:520},
+    {x1:11530,y1:520,x2:11600,y2:450}
+  ],
+  loops:[
+    {cx:2600,cy:335,r:185},
+    {cx:7350,cy:335,r:185},
+    {cx:10720,cy:335,r:185}
+  ],
+  springs:[
+    {x:900,y:435,power:18},{x:1740,y:425,power:20},{x:3250,y:500,power:20},
+    {x:4750,y:435,power:19},{x:6250,y:500,power:21},{x:7750,y:450,power:19},
+    {x:9300,y:500,power:21},{x:10850,y:450,power:20}
+  ],
+  rings:[
+    ...Array.from({length:9},(_,i)=>({x:280+i*42,y:450})),
+    ...Array.from({length:7},(_,i)=>({x:1180+i*42,y:420})),
+    ...Array.from({length:10},(_,i)=>({x:2040+i*40,y:390})),
+    ...Array.from({length:9},(_,i)=>({x:2910+i*40,y:440})),
+    ...Array.from({length:8},(_,i)=>({x:3500+i*40,y:375})),
+    ...Array.from({length:10},(_,i)=>({x:4550+i*40,y:400})),
+    ...Array.from({length:8},(_,i)=>({x:5580+i*42,y:400})),
+    ...Array.from({length:9},(_,i)=>({x:7050+i*40,y:430})),
+    ...Array.from({length:10},(_,i)=>({x:8000+i*40,y:410})),
+    ...Array.from({length:8},(_,i)=>({x:8650+i*42,y:380})),
+    ...Array.from({length:10},(_,i)=>({x:9620+i*40,y:405})),
+    ...Array.from({length:9},(_,i)=>({x:11100+i*42,y:400}))
+  ],
+  homingTargets:[
+    {x:820,y:360},{x:1710,y:330},{x:2180,y:300},{x:3020,y:330},
+    {x:3650,y:300},{x:4680,y:315},{x:5700,y:325},{x:6700,y:300},
+    {x:7600,y:315},{x:8200,y:300},{x:9150,y:320},{x:10150,y:300},{x:11200,y:315}
+  ],
+  // Fewer signs, positioned near open running lanes so time travel is intentional.
+  timeSigns:[
+    {x:1120,y:455,type:"future"},
+    {x:1980,y:455,type:"past"},
+    {x:5000,y:455,type:"future"},
+    {x:5980,y:455,type:"past"},
+    {x:9020,y:455,type:"future"},
+    {x:10030,y:455,type:"past"}
+  ],
+  finishSign:{x:21450,y:445}
+};
+
+// Hand-authored route cuts: these replace repetitive flat ground with
+// recognizable landmarks. The lower route is intentionally interrupted here;
+// the player must use the bridge, staircase, tunnel, or switchback geometry.
+(function makeUniqueRoutes(){
+  const cut=(a,b)=>{
+    const rebuilt=[];
+    for(const s of world.solids){
+      if(s.y!==520 || s.x+s.w<=a || s.x>=b){rebuilt.push(s);continue;}
+      if(s.x<a) rebuilt.push({x:s.x,y:s.y,w:a-s.x,h:s.h});
+      if(s.x+s.w>b) rebuilt.push({x:b,y:s.y,w:s.x+s.w-b,h:s.h});
+    }
+    world.solids=rebuilt;
+  };
+  const add=(x,y,w)=>world.solids.push({x,y,w,h:20});
+  // 1) Lakeside bridge: a real gap with three offset bridge decks.
+  cut(6900,7360);
+  add(6900,430,170); add(7110,350,190); add(7340,430,170);
+  // 2) Rocky staircase ravine: drop out the floor and make the staircase the route.
+  cut(11680,12300);
+  add(11680,455,145); add(11845,400,145); add(12010,345,145); add(12175,400,145);
+  // 3) Forest tunnel: narrow elevated roof over a deep route, followed by an open jump.
+  cut(13740,14500);
+  add(13740,455,220); add(14000,410,180); add(14220,365,180); add(14430,455,150);
+  // 4) Cliffside switchback: two separated decks with a lower landing.
+  cut(15700,16480);
+  add(15700,440,190); add(15930,350,210); add(16180,440,190);
+  // 5) Final bridge: long staggered upper path over open water.
+  cut(18120,19340);
+  add(18120,440,260); add(18430,350,300); add(18780,300,260); add(19090,390,260);
+})();
+
+// One hidden robot transporter in the Past. Destroying it creates the Good Future.
+world.machines=[{x:6200,y:405,hp:3,destroyed:false}];
+
+// ---------------------------------------------------------------------------
+// LEVEL BUILD — Fuji Lake Act
+// A larger, hand-authored Sonic-CD-inspired layout with distinct set pieces,
+// high/low routes, shortcuts, loops, springs and exploration pockets.
+// ---------------------------------------------------------------------------
+function buildFujiLakeLevel(){
+  // FINAL CONCEPT-ART BUILD.
+  // The user's drawing is the blueprint: one continuous terrain profile up to
+  // the single large water gap, then a second continuous terrain profile.
+  // Sonic's drawn size is used as the scale reference. Rings/springs are not
+  // part of this build yet.
+  world.width=23000; world.groundY=520;
+  world.solids=[]; world.slopes=[]; world.loops=[]; world.springs=[];
+  world.rings=[]; world.homingTargets=[]; world.timeSigns=[]; world.waterGaps=[]; world.barriers=[];
+
+  const flat=(x1,x2,y)=>world.solids.push({x:x1,y,w:x2-x1,h:1020-y});
+  const slope=(x1,y1,x2,y2)=>world.slopes.push({x1,y1,x2,y2});
+  const waterGap=(x,w,top=560)=>world.waterGaps.push({x,w,top});
+  const terrain=[];
+  const addPoint=(x,y)=>terrain.push({x,y});
+  const buildTerrain=(pts)=>{
+    // Visual terrain is one continuous polygon. Collision uses the same
+    // profile: flats are solids, angled portions are slope surfaces.
+    for(let i=0;i<pts.length-1;i++){
+      const a=pts[i],b=pts[i+1];
+      if(Math.abs(a.y-b.y)<.01) flat(a.x,b.x,a.y);
+      else slope(a.x,a.y,b.x,b.y);
+    }
+  };
+
+  // ---------------------------------------------------------------------
+  // TERRAIN 1 — everything from START to the large water gap is ONE piece.
+  // Coordinates are intentionally based on the silhouette in the drawing.
+  // ---------------------------------------------------------------------
+  const first=[
+    // start / first Future sign
+    [0,520],[760,520],[900,500],[1080,500],[1200,520],
+    // long shallow dip
+    [1480,520],[1600,555],[1830,555],[1960,520],
+    // low rise into Past
+    [2240,520],[2420,505],[2630,505],[2780,520],
+    // bridge area: terrain drops only for the small channel under the bridge
+    [3320,520],[3430,535],[3540,560],[3640,560],[3750,535],[3860,520],
+    // long rise / Future
+    [4300,520],[4520,495],[4750,495],[4920,515],[5200,515],
+    // rock formation begins: rising rock shoulder with generator on top
+    [5550,500],[5790,470],[6030,430],[6250,430],[6420,470],[6570,505],[6750,520],
+    // run toward the large gap
+    [7160,520],[7380,500],[7600,500],[7790,520],
+    [8120,520],[8330,490],[8520,490],[8710,520],
+    // final lip before gap
+    [9000,520],[9180,500],[9360,500],[9520,520]
+  ].map(([x,y])=>({x,y}));
+  buildTerrain(first);
+
+  // The small bridge is the one rectangular structure in this area. It sits
+  // over a narrow channel cut into the otherwise continuous first terrain.
+  world.waterGaps.push({x:3430,w:430,top:560,small:true});
+  world.bridge={x:3430,y:505,w:430,h:28};
+  world.barriers=[];
+
+  // Large gap explicitly labeled in the concept art.
+  waterGap(9520,1280,520);
+
+  // ---------------------------------------------------------------------
+  // TERRAIN 2 — starts on the far side of the large gap and remains one
+  // continuous terrain piece all the way to the forest/goal.
+  // ---------------------------------------------------------------------
+  const second=[
+    // far lip / loop approach
+    [10800,520],[10980,500],[11140,500],[11260,520],
+    // loop sits in the terrain here
+    [11600,520],[11820,520],[12040,505],[12220,505],[12380,520],
+    // Past sign area, then the distinct hill shown in the drawing
+    [12700,520],[12900,515],[13080,475],[13250,475],[13420,515],[13580,520],
+    // deeper dip
+    [13820,520],[13980,555],[14160,555],[14320,520],
+    // small rise and long low run
+    [14600,520],[14800,500],[15020,500],[15200,520],
+    [15600,520],[15820,515],[16050,515],[16240,520],
+    // another shallow hill/dip — not a gap
+    [16500,520],[16670,545],[16850,545],[17020,520],
+    [17350,520],[17550,505],[17750,505],[17950,520],
+    // long straight run into forest
+    [18400,520],[18800,520],[19200,520],[19600,520],[20000,520],
+    // goal section
+    [20600,520],[21100,520],[21800,520],[23000,520]
+  ].map(([x,y])=>({x,y}));
+  buildTerrain(second);
+
+  // One smaller, Sonic-scaled loop. The loop center/radius are intentionally
+  // modest compared with the previous versions.
+  world.loops.push({cx:11600,cy:450,r:70});
+
+  // Time signs match the labels in the concept art.
+  world.timeSigns.push(
+    {x:1050,y:455,type:'future'},
+    {x:2450,y:455,type:'past'},
+    {x:4920,y:450,type:'future'},
+    {x:6180,y:380,type:'past'},
+    {x:12180,y:455,type:'past'}
+  );
+
+  // Generator sits ON TOP of the rocky formation, before the large gap.
+  world.machines=[{x:6180,y:400,hp:3,destroyed:false}];
+  world.generatorRock={x1:5500,x2:6750,top:430};
+  world.finishSign={x:21800,y:445};
+  window.__conceptTerrain1=first;
+  window.__conceptTerrain2=second;
+}
+
+// ============================================================================
+// FANTASTIC FUJI CUSTOM MUSIC
+// Put these MP3 files in Music/FF/ next to this HTML file.
+// FantasticFuji_Present.mp3
+// FantasticFuji_Past.mp3
+// FantasticFuji_BadFuture.mp3
+// FantasticFuji_GoodFuture.mp3
+// FantasticFuji_StageClear.mp3
+// FantasticFuji_GoodFutureClear.mp3
+// ============================================================================
+const MUSIC_BASE='Music/FF/';
+const MUSIC_FILES={
+  present:MUSIC_BASE+'FantasticFuji_Present.mp3',
+  past:MUSIC_BASE+'FantasticFuji_Past.mp3',
+  badFuture:MUSIC_BASE+'FantasticFuji_BadFuture.mp3',
+  goodFuture:MUSIC_BASE+'FantasticFuji_GoodFuture.mp3',
+  stageClear:MUSIC_BASE+'FantasticFuji_StageClear.mp3',
+  goodFutureClear:MUSIC_BASE+'FantasticFuji_GoodFutureClear.mp3'
+};
+let musicEnabled=true,musicVolume=.35,musicEra='present',musicCurrentKey=null,musicCurrent=null;
+let musicStarted=false,musicPendingKey=null;
+const musicPlayers={};
+
+function musicFile(key){return MUSIC_FILES[key]||MUSIC_FILES.present;}
+function musicMake(key,loop=true){
+  if(musicPlayers[key]){
+    const a=musicPlayers[key];
+    a.loop=loop;a.volume=musicVolume;
+    return a;
+  }
+  const a=new Audio();
+  a.src=musicFile(key);
+  a.loop=loop;
+  a.preload='auto';
+  a.volume=musicVolume;
+  musicPlayers[key]=a;
+  return a;
+}
+function musicStopCurrent(){
+  if(musicCurrent){
+    musicCurrent.pause();
+    musicCurrent.currentTime=0;
+  }
+  musicCurrent=null;musicCurrentKey=null;
+}
+function musicPlay(key,loop=true,reset=true){
+  if(!musicEnabled)return;
+  const a=musicMake(key,loop);
+  if(musicCurrent && musicCurrent!==a){
+    musicCurrent.pause();
+    musicCurrent.currentTime=0;
+  }
+  musicCurrent=a;
+  musicCurrentKey=key;
+  a.loop=loop;
+  a.volume=musicVolume;
+  if(reset)a.currentTime=0;
+  const promise=a.play();
+  if(promise&&typeof promise.catch==='function'){
+    promise.then(()=>{
+      musicStarted=true;
+      musicPendingKey=null;
+    }).catch(()=>{
+      musicPendingKey=key;
+    });
+  }else{
+    musicStarted=true;
+    musicPendingKey=null;
+  }
+}
+function musicSetEra(key){
+  musicEra=key||'present';
+  const name=document.getElementById('musicName');
+  const labels={past:'PAST',present:'PRESENT',badFuture:'BAD FUTURE',goodFuture:'GOOD FUTURE'};
+  if(name)name.textContent=labels[musicEra]||'PRESENT';
+  // Always switch tracks when the timeline changes. This is deliberately
+  // separate from the editor so GitHub Pages can use the same relative paths.
+  if(musicEnabled && !levelComplete){
+    musicPlay(musicEra,true,true);
+  }
+}
+function musicPlayClear(good){
+  if(!musicEnabled)return;
+  musicPlay(good?'goodFutureClear':'stageClear',false,true);
+}
+function musicToggle(){
+  musicEnabled=!musicEnabled;
+  const btn=document.getElementById('musicToggle');
+  if(btn)btn.textContent='MUSIC: '+(musicEnabled?'ON':'OFF');
+  if(musicEnabled){
+    if(levelComplete){
+      const good=world.machines.length>0&&world.machines.every(m=>m.destroyed);
+      musicPlayClear(good);
+    }else musicPlay(musicEra,true,true);
+  }else{
+    musicPendingKey=null;
+    musicStopCurrent();
+  }
+}
+function musicInitUI(){
+  const btn=document.getElementById('musicToggle'),vol=document.getElementById('musicVolume');
+  if(btn)btn.addEventListener('click',e=>{e.stopPropagation();musicToggle();});
+  if(vol)vol.addEventListener('input',e=>{
+    musicVolume=Number(e.target.value);
+    for(const a of Object.values(musicPlayers))a.volume=musicVolume;
+  });
+  const start=()=>{
+    if(!musicEnabled || levelComplete)return;
+    if(musicPendingKey) musicPlay(musicPendingKey,true,false);
+    else if(!musicCurrent || musicCurrent.paused) musicPlay(musicEra,true,false);
+  };
+  window.addEventListener('pointerdown',start);
+  window.addEventListener('keydown',start);
+}
+musicInitUI();
+
+buildFujiLakeLevel();
+window.__editorSections=[window.__conceptTerrain1,window.__conceptTerrain2];
+// Each era gets its own editable scene. PRESENT starts from the original level;
+// the other eras begin as copies so the user can diverge them independently.
+const EDITOR_ERAS=['past','present','badFuture','goodFuture'];
+function cloneSceneFromCurrent(){return {sections:clonePoints(window.__editorSections||[]),waterGaps:(world.waterGaps||[]).map(g=>({...g})),loops:(world.loops||[]).map(l=>({...l})),bridge:world.bridge?({...world.bridge}):null,barriers:(world.barriers||[]).map(b=>({...b})),machines:(world.machines||[]).map(m=>({...m})),generatorRock:world.generatorRock?({...world.generatorRock}):null,timeSigns:(world.timeSigns||[]).map(x=>({...x})),forestStart:window.editorForestStart??23200};}
+function clonePoints(sections){return (sections||[]).map(a=>(a||[]).map(q=>({x:q.x,y:q.y})));}
+const __baseEditorScene=cloneSceneFromCurrent();
+const timelineEditorData={past:structuredClone(__baseEditorScene),present:structuredClone(__baseEditorScene),badFuture:structuredClone(__baseEditorScene),goodFuture:structuredClone(__baseEditorScene)};
+function editorEraKeyForGame(){if(timeline==='past')return 'past';if(timeline==='future')return world.machines.length>0&&world.machines.every(m=>m.destroyed)?'goodFuture':'badFuture';return 'present';}
+function applyEditorScene(key){const d=timelineEditorData[key]||timelineEditorData.present;window.__editorSections=clonePoints(d.sections);window.__conceptTerrain1=window.__editorSections[0]||[];window.__conceptTerrain2=window.__editorSections[1]||[];world.waterGaps=(d.waterGaps||[]).map(g=>({...g}));world.loops=(d.loops||[]).map(l=>({...l}));world.bridge=d.bridge?({...d.bridge}):null;world.barriers=(d.barriers||[]).map(b=>({...b}));world.machines=(d.machines||[]).map(m=>({...m}));world.generatorRock=d.generatorRock?({...d.generatorRock}):null;world.timeSigns=(d.timeSigns||[]).map(x=>({...x}));window.editorForestStart=d.forestStart??23200;editorRebuildCollisionRaw();}
+function saveEditorScene(key){timelineEditorData[key]={sections:clonePoints(window.__editorSections),waterGaps:(world.waterGaps||[]).map(g=>({...g})),loops:(world.loops||[]).map(l=>({...l})),bridge:world.bridge?({...world.bridge}):null,barriers:(world.barriers||[]).map(b=>({...b})),machines:(world.machines||[]).map(m=>({...m})),generatorRock:world.generatorRock?({...world.generatorRock}):null,timeSigns:(world.timeSigns||[]).map(x=>({...x})),forestStart:window.editorForestStart??23200};}
+function editorRebuildCollisionRaw(){world.solids=[];world.slopes=[];for(const pts of getEditorSections()){if(!pts||pts.length<2)continue;for(let i=0;i<pts.length-1;i++){const a=pts[i],b=pts[i+1];if(Math.abs(a.y-b.y)<.01)world.solids.push({x:a.x,y:a.y,w:b.x-a.x,h:1020-a.y});else world.slopes.push({x1:a.x,y1:a.y,x2:b.x,y2:b.y});}}
+  // Bridges are real collision surfaces, not just visual rectangles.
+  if(world.bridge) world.solids.push({x:world.bridge.x,y:world.bridge.y,w:world.bridge.w,h:world.bridge.h});
+  // Barrier blocks are solid rectangular obstacles.
+  for(const b of world.barriers||[]) world.solids.push({x:b.x,y:b.y,w:b.w,h:b.h});
+  world.baseSolids=world.solids.slice();world.baseSlopes=world.slopes.slice();for(const L of world.loops||[])prepareLoopTrack(L);}
+// Timeline-specific route changes. The four eras share the same broad location,
+// but a few bridges/shortcuts shift so exploring time is mechanically meaningful.
+world.baseSolids=world.solids.slice();
+world.baseSlopes=world.slopes.slice();
+function applyTimelineLayout(){
+  const key=editorEraKeyForGame();
+  if(typeof timelineEditorData!=='undefined'&&timelineEditorData[key]) applyEditorScene(key);
+  else {world.solids=world.baseSolids.slice();world.slopes=world.baseSlopes.slice();}
+  musicSetEra(key);
+}
+
+
+const p={
+  x:80,y:460,vx:0,vy:0,
+  w:28,h:42,
+  grounded:false,
+  rolling:false,
+  jumping:false,
+  homing:false,
+  nhome:false,
+  homingTimer:0,
+  homingTarget:null,
+  invuln:0,
+  rings:0,
+  angle:0,
+  loopIndex:-1,
+  loopSide:null,
+  loopTrack:null,
+  loopTheta:0,
+  loopDist:0,
+  loopSpeed:0,
+  spindash:false,
+  spindashCharge:0,
+  peel:false,
+  peelCharge:0,
+  airSpindash:false,
+  airSpindashCharge:0,
+  airAimX:1,
+  airAimY:0,
+  abilityBoostTimer:0,
+  coyote:0,
+  lastSafeX:80,
+  normalSpeed:0,
+  facing:1
+};
+
+const PHYS={
+  gravity:.72,
+  accel:.82,
+  airAccel:.34,
+  maxSpeed:12.5,
+  rollFriction:.075,
+  groundFriction:.22,
+  slopeGravity:.18,
+  jump:-13.5,
+  jumpRelease:.45,
+  spinDashBase:22,
+  spinDashPerCharge:1.05,
+  peelBase:26,
+  peelMax:46,
+  homingSpeed:32
+};
+
+let cameraX=0;
+let cameraY=0;
+let shake=0;
+
+// Sonic CD-style timeline: present, past, future.
+// A sign is activated by running through it, then maintaining high speed
+// for 3 seconds. Losing momentum cancels the attempt.
+let timeline="present";
+applyTimelineLayout();
+let timeWarpSign=null;
+let timeWarpTimer=0;
+let timeWarpFlash=0;
+let timeWarpCooldown=0;
+let particles=[];
+let sonicTrails=[];
+let trailTimer=0;
+let time=0;
+let levelComplete=false;
+let levelTime=0;
+let finishTimer=0;
+const LEVEL_NAME="FANTASTIC FUJI";
+const LEVEL_ACT=1;
+let titleCardTimer=3.25;
+let forestSeen=false;
+const TITLE_CARD_DURATION=3.25;
+
+function clamp(v,a,b){return Math.max(a,Math.min(b,v));}
+function lerp(a,b,t){return a+(b-a)*t;}
+function dist(a,b){return Math.hypot(a.x-b.x,a.y-b.y);}
+
+function spawnParticles(x,y,n=8){
+  for(let i=0;i<n;i++){
+    const a=Math.random()*Math.PI*2, s=1+Math.random()*4;
+    particles.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:.5+Math.random()*.5});
+  }
+}
+
+function reset(){
+  Object.assign(p,{
+    x:80,y:460,vx:0,vy:0,grounded:false,rolling:false,jumping:false,
+    homing:false,nhome:false,homingTimer:0,
+  homingTarget:null,invuln:0,rings:0,angle:0,loopIndex:-1,
+    loopSide:null,loopTrack:null,loopTheta:0,loopDist:0,loopSpeed:0,spindash:false,spindashCharge:0,peel:false,
+    peelCharge:0,airSpindash:false,airSpindashCharge:0,airAimX:1,airAimY:0,abilityBoostTimer:0,coyote:0,lastSafeX:80,normalSpeed:0,facing:1,speedUnlocked:false,
+  });
+  cameraX=0;cameraY=0;shake=0;
+  timeline="present";
+  musicStopCurrent();
+  musicPendingKey=null;
+  musicEra='present';
+  const musicName=document.getElementById('musicName'); if(musicName) musicName.textContent='PRESENT';
+  applyTimelineLayout();
+  timeWarpSign=null;
+  timeWarpTimer=0;
+  timeWarpFlash=0;
+  timeWarpCooldown=0;
+  sonicTrails=[]; trailTimer=0;
+  levelComplete=false;
+  levelTime=0;
+  finishTimer=0;
+  titleCardTimer=TITLE_CARD_DURATION;
+  forestSeen=false;
+  for(const m of world.machines) { m.hp=3; m.destroyed=false; }
+}
+function respawn(){
+  p.x=p.lastSafeX;p.y=430;p.vx=0;p.vy=0;p.homing=false;p.nhome=false;p.homingTarget=null;p.loopIndex=-1;p.loopSide=null;p.loopTrack=null;p.loopDist=0;p.speedUnlocked=false;
+  p.rings=0;shake=10;
+}
+
+function groundHeightAt(x){
+  // Loop areas are handled separately.
+  for(const s of world.slopes){
+    const min=Math.min(s.x1,s.x2)-8,max=Math.max(s.x1,s.x2)+8;
+    if(x>=min && x<=max){
+      const t=(x-s.x1)/(s.x2-s.x1);
+      return lerp(s.y1,s.y2,t);
+    }
+  }
+  for(const s of world.solids){
+    if(x>=s.x && x<=s.x+s.w && s.y<700) return s.y;
+  }
+  return 700;
+}
+
+function nearestLoop(){
+  for(let i=0;i<world.loops.length;i++){
+    const L=world.loops[i];
+    const dx=p.x-L.cx,dy=(p.y+20)-L.cy;
+    const d=Math.hypot(dx,dy);
+    // Only attach when near the loop's track and moving sufficiently.
+    if(Math.abs(d-L.r)<38 && Math.abs(p.vx)>4 && p.y<570)
+      return {i,L,theta:Math.atan2(dy,dx)};
+  }
+  return null;
+}
+
+function cubicPoint(a,b,c,d,t){
+  const u=1-t;
+  return {
+    x:u*u*u*a.x+3*u*u*t*b.x+3*u*t*t*c.x+t*t*t*d.x,
+    y:u*u*u*a.y+3*u*u*t*b.y+3*u*t*t*c.y+t*t*t*d.y
+  };
+}
+
+function prepareLoopTrack(L){
+  if(L.trackBoth) return;
+
+  // ONE LARGE TUBE, OPEN AT THE BOTTOM.
+  // From the LEFT: enter the bottom opening, travel to the RIGHT wall,
+  // go UP the right wall, across the ceiling, DOWN the left wall, reach the
+  // bottom opening, then continue out to the RIGHT.
+  // From the RIGHT: the exact same tube works in reverse.
+  const makePath=(fromLeft)=>{
+    const pts=[];
+    const entry={x:L.cx+(fromLeft?-L.r-150:L.r+150),y:L.cy+L.r};
+    const wall={x:L.cx+(fromLeft?L.r:-L.r),y:L.cy};
+    const exit={x:L.cx+(fromLeft?L.r+150:-L.r-150),y:L.cy+L.r};
+    const steps=36;
+
+    // Straight bottom approach through the open tube.
+    const c1={x:wall.x+(fromLeft?-80:80),y:entry.y};
+    const c2={x:wall.x,y:wall.y+95};
+    for(let i=0;i<=steps;i++) pts.push(cubicPoint(entry,c1,c2,wall,i/steps));
+
+    // 270-degree interior arc: right wall -> ceiling -> left wall -> bottom
+    // for left-to-right travel, and the exact reverse from the other side.
+    const arcSteps=300;
+    for(let i=1;i<=arcSteps;i++){
+      const q=i/arcSteps;
+      const theta=fromLeft ? -(Math.PI*1.5)*q : Math.PI+(Math.PI*1.5)*q;
+      pts.push({x:L.cx+Math.cos(theta)*L.r,y:L.cy+Math.sin(theta)*L.r});
+    }
+
+    // Straight bottom exit toward the opposite side.
+    const last=pts[pts.length-1];
+    const c3={x:last.x+(fromLeft?80:-80),y:last.y};
+    const c4={x:exit.x+(fromLeft?-70:70),y:exit.y};
+    for(let i=1;i<=steps;i++) pts.push(cubicPoint(last,c3,c4,exit,i/steps));
+
+    const dist=[];dist[0]=0;
+    for(let i=1;i<pts.length;i++) dist[i]=dist[i-1]+Math.hypot(pts[i].x-pts[i-1].x,pts[i].y-pts[i-1].y);
+    return {pts,dist,total:dist[dist.length-1],fromLeft};
+  };
+
+  L.trackBoth={left:makePath(true),right:makePath(false)};
+  L.track=L.trackBoth.left;
+}
+function loopTrackSample(L,d,track){
+  const T=track||L.track;
+  const D=T.total;
+  d=clamp(d,0,D);
+  let lo=0,hi=T.dist.length-1;
+  while(lo<hi){
+    const mid=(lo+hi)>>1;
+    if(T.dist[mid]<d) lo=mid+1; else hi=mid;
+  }
+  const i=Math.max(1,lo);
+  const d0=T.dist[i-1],d1=T.dist[i];
+  const t=(d-d0)/Math.max(.0001,d1-d0);
+  const a=T.pts[i-1],b=T.pts[i];
+  const tx=b.x-a.x,ty=b.y-a.y,mag=Math.hypot(tx,ty)||1;
+  return {x:lerp(a.x,b.x,t),y:lerp(a.y,b.y,t),tx:tx/mag,ty:ty/mag};
+}
+
+for(const L of world.loops) prepareLoopTrack(L);
+
+function updateLoop(dt){
+  if(p.loopIndex<0){
+    let best=null,bestDist=Infinity;
+    for(let i=0;i<world.loops.length;i++){
+      const L=world.loops[i];prepareLoopTrack(L);
+      for(const side of ['left','right']){
+        const T=L.trackBoth[side],e=T.pts[0];
+        const d=Math.hypot(p.x-e.x,(p.y+20)-e.y);
+        const movingInto=(side==='left' && p.vx>5.5) || (side==='right' && p.vx<-5.5);
+        const near=p.x>e.x-95 && p.x<e.x+95 && p.y>e.y-58 && p.y<e.y+58;
+        if(near && p.grounded && movingInto && d<bestDist){best={i,side};bestDist=d;}
+      }
+    }
+    if(!best) return false;
+    const L=world.loops[best.i];
+    p.loopIndex=best.i;
+    p.loopSide=best.side;
+    p.loopTrack=L.trackBoth[best.side];
+    p.loopDist=Math.max(0,p.loopTrack.dist[1]);
+    p.loopSpeed=Math.max(6,Math.abs(p.vx));
+    p.rolling=true;p.grounded=true;p.jumping=false;
+  }
+
+  const L=world.loops[p.loopIndex];
+  const T=p.loopTrack||L.trackBoth[p.loopSide||'left'];
+  const cur=loopTrackSample(L,p.loopDist,T);
+  let speed=p.vx*cur.tx+p.vy*cur.ty;
+  const left=down('ArrowLeft'),right=down('ArrowRight');
+  const dir=(right?1:0)-(left?1:0);
+  if(dir) speed+=dir*.42;
+  speed+=PHYS.gravity*cur.ty*.72;
+  speed*=.999;
+  if(speed<2.4){
+    p.loopIndex=-1;p.grounded=false;p.jumping=true;
+    p.vx=cur.tx*Math.max(0,speed);p.vy=cur.ty*Math.max(0,speed);p.angle=0;
+    return false;
+  }
+  if(hit(' ')){
+    p.loopIndex=-1;p.grounded=false;p.jumping=true;
+    p.vx=cur.tx*speed;p.vy=cur.ty*speed-5.5;p.angle=0;
+    return false;
+  }
+  p.loopSpeed=speed;p.loopDist+=speed*dt*60;
+  if(p.loopDist>=T.total){
+    const out=loopTrackSample(L,T.total,T);
+    p.x=out.x;p.y=out.y-20;p.vx=Math.max(4,speed)*out.tx;p.vy=Math.max(4,speed)*out.ty;
+    p.loopIndex=-1;p.loopTrack=null;p.loopSide=null;p.grounded=true;p.jumping=false;p.rolling=true;p.angle=Math.atan2(out.ty,out.tx);
+    return false;
+  }
+  const next=loopTrackSample(L,p.loopDist,T);
+  p.x=next.x;p.y=next.y-20;p.vx=next.tx*speed;p.vy=next.ty*speed;
+  p.angle=Math.atan2(next.ty,next.tx);p.grounded=true;p.jumping=false;p.rolling=true;
+  return true;
+}
+
+function activateTimeSign(sign){
+  // The post only arms time travel. It does NOT start the 3-second timer.
+  // The player can touch the post, then build speed afterward.
+  if(!sign || !sign.type) return;
+
+  let destination=null;
+  if(timeline === "present"){
+    destination = sign.type;
+  }else if(timeline === "past" && sign.type === "future"){
+    destination = "present";
+  }else if(timeline === "future" && sign.type === "past"){
+    destination = "present";
+  }else{
+    // A same-direction sign is not valid in that timeline.
+    return;
+  }
+
+  timeWarpSign={sign:sign,destination:destination};
+  timeWarpTimer=0;
+  spawnParticles(sign.x,sign.y,10);
+  shake=3;
+}
+
+function updateTimeTravel(dt){
+  if(timeWarpCooldown>0) timeWarpCooldown-=dt;
+  if(timeWarpFlash>0) timeWarpFlash-=dt;
+
+  // Run THROUGH a sign to activate it, just like Sonic CD.
+  if(!timeWarpSign && timeWarpCooldown<=0){
+    for(const s of world.timeSigns){
+      const crossed = Math.abs(p.x-s.x)<30 && Math.abs((p.y+20)-s.y)<82 && Math.abs(p.vx)>2;
+      if(crossed){ activateTimeSign(s); break; }
+    }
+  }
+  if(!timeWarpSign) return;
+
+  // Once the sign is active, the player needs real sustained momentum.
+  // A small tolerance prevents a single frame of physics jitter from ruining
+  // an otherwise successful 3-second run.
+  const speed=Math.abs(p.vx);
+  const enoughSpeed=speed>=7.6 && !p.spindash && !p.peel && !p.airSpindash;
+
+  if(enoughSpeed){
+    timeWarpTimer+=dt;
+    if(Math.random()<.8) spawnParticles(p.x-p.vx*.8,p.y+20,1);
+
+    if(timeWarpTimer>=3.0){
+      timeline=timeWarpSign.destination;
+      applyTimelineLayout();
+      timeWarpSign=null;
+      timeWarpTimer=0;
+      timeWarpCooldown=1.0;
+      timeWarpFlash=.8;
+      shake=12;
+      p.vx=Math.sign(p.vx||1)*Math.max(speed,10);
+      p.invuln=.8;
+      spawnParticles(p.x,p.y+20,30);
+    }
+  }else{
+    // Keep the sign active so the player can simply accelerate and try again.
+    // Only cancel the current charge, matching the core CD behavior.
+    timeWarpTimer=0;
+  }
+}
+
+function tryHoming(){
+  // A Homing Attack is only available when there is a real target.
+  // If there is nothing to home to, Space does NOT perform a fallback dash.
+  // Nhome stays locked until Sonic touches ground or hits an enemy/target.
+  if(p.nhome) return;
+  let best=null, bestD=Infinity;
+  for(const t of world.homingTargets){
+    const dx=t.x-p.x, dy=t.y-(p.y+20);
+    const d=Math.hypot(dx,dy);
+    if(d<300 && d<bestD){ best=t; bestD=d; }
+  }
+  if(!best){
+    p.nhome=true;
+    return;
+  }
+  const dx=best.x-p.x, dy=best.y-(p.y+20);
+  const d=Math.max(1,Math.hypot(dx,dy));
+  p.homing=true; p.nhome=false; p.homingTimer=.42; p.homingTarget=best;
+  p.grounded=false; p.rolling=true;
+  // Homing Attack never unlocks the high-speed cap.
+  p.speedUnlocked=false;
+  const launch=42;
+  p.vx=(dx/d)*launch; p.vy=(dy/d)*launch;
+  spawnParticles(p.x,p.y+20,14); shake=3;
+}
+
+function platformSurfaceAt(xPrev,xNext,prevBottom,nextBottom){
+  let best=null;
+  const minX=Math.min(xPrev,xNext)-3, maxX=Math.max(xPrev,xNext)+3;
+  // Sweep the whole movement path. Slopes are checked against Sonic's interpolated
+  // bottom edge, which prevents him from sinking into or popping through a slope
+  // when moving quickly in either direction.
+  const samples=Math.max(3,Math.ceil((maxX-minX)/8));
+  for(let i=0;i<=samples;i++){
+    const x=minX+(maxX-minX)*(i/samples);
+    const tMove=(x-xPrev)/((xNext-xPrev)||1);
+    const bottom=prevBottom+(nextBottom-prevBottom)*tMove;
+
+    for(const s of world.slopes){
+      const lo=Math.min(s.x1,s.x2), hi=Math.max(s.x1,s.x2);
+      if(x<lo || x>hi) continue;
+      const t=(x-s.x1)/((s.x2-s.x1)||1);
+      const y=lerp(s.y1,s.y2,t);
+      // Only land when descending through the slope surface.
+      if(prevBottom<=y+14 && bottom>=y-3 && (best===null || y<best)) best=y;
+    }
+
+    for(const s of world.solids){
+      if(x>=s.x && x<=s.x+s.w && s.y<700 && prevBottom<=s.y+10 && bottom>=s.y-3){
+        if(best===null || s.y<best) best=s.y;
+      }
+    }
+  }
+  return best;
+}
+
+function updateSonicTrail(dt){
+  for(let i=sonicTrails.length-1;i>=0;i--){
+    sonicTrails[i].life-=dt;
+    if(sonicTrails[i].life<=0) sonicTrails.splice(i,1);
+  }
+  trailTimer-=dt;
+  if(Math.abs(p.vx)>30 || Math.hypot(p.vx,p.vy)>30){
+    if(trailTimer<=0){
+      sonicTrails.push({x:p.x,y:p.y,angle:p.angle,life:.20,max:.20});
+      if(sonicTrails.length>12) sonicTrails.shift();
+      trailTimer=.035;
+    }
+  }else trailTimer=0;
+}
+
+function resolveRaisedTerrainCollision(prevX,nextX){
+  if(nextX===prevX) return;
+  const movingRight=nextX>prevX,movingLeft=nextX<prevX;
+  const halfW=p.w/2,halfH=p.h/2;
+  const nextY=p.y;
+  const prevY=p.y-p.vy;
+  const prevTop=prevY-halfH,prevBottom=prevY+halfH;
+  const nextTop=nextY-halfH,nextBottom=nextY+halfH;
+
+  // Swept side collision. Use both the old and predicted Y positions so a fast
+  // Sonic cannot walk through the vertical face of a raised block.
+  for(const s of world.solids){
+    if(s.y>=700) continue;
+    const overlap=Math.max(prevTop,nextTop)<s.y+s.h && Math.min(prevBottom,nextBottom)>s.y;
+    if(!overlap) continue;
+    if(movingRight && prevX+halfW<=s.x+2 && nextX+halfW>=s.x){
+      p.x=s.x-halfW;p.vx=0;return;
+    }
+    if(movingLeft && prevX-halfW>=s.x+s.w-2 && nextX-halfW<=s.x+s.w){
+      p.x=s.x+s.w+halfW;p.vx=0;return;
+    }
+  }
+
+  // For slopes, resolve the swept vertical crossing using the predicted Y.
+  // This prevents Sonic from phasing into the rising face and then being frozen.
+  const nextBottomPred=nextY+halfH;
+  const surface=platformSurfaceAt(prevX,nextX,prevBottom,nextBottomPred);
+  if(surface!==null && p.vy>=0){
+    p.y=surface-halfH;p.vy=0;p.grounded=true;p.jumping=false;p.nhome=false;
+  }
+}
+
+function updatePlayer(dt){
+  if(hit("r")||hit("R")){reset();return;}
+  if(titleCardTimer>0){ titleCardTimer=Math.max(0,titleCardTimer-dt); return; }
+  updateTimeTravel(dt);
+  if(!levelComplete) levelTime+=dt;
+  if(p.invuln>0)p.invuln-=dt;
+  if(p.homingTimer>0)p.homingTimer-=dt;
+
+
+  // Loop handling has priority.
+  if(updateLoop(dt)) return;
+
+  const left=down("ArrowLeft"),right=down("ArrowRight");
+  const dir=(right?1:0)-(left?1:0);
+  if(dir!==0) p.facing=dir;
+
+  // Spin Dash on ground: hold down + Z, release Z to launch.
+  if(p.grounded && down("ArrowDown") && (down("z")||down("Z"))){
+    p.spindash=true;
+    p.spindashCharge=clamp(p.spindashCharge+.45,0,20);
+    p.vx*=.75;
+    spawnParticles(p.x,p.y+p.h/2,Math.random()<.25?2:0);
+  } else if(p.spindash && !down("z")&&!down("Z")){
+    const sign=dir||p.facing||Math.sign(p.vx)||1;
+    p.vx=sign*(PHYS.spinDashBase+p.spindashCharge*PHYS.spinDashPerCharge);
+    p.abilityBoostTimer=999;
+    p.speedUnlocked=true;
+    p.rolling=true;
+    p.spindash=false;
+    p.spindashCharge=0;
+    spawnParticles(p.x,p.y+p.h/2,14);
+    shake=4;
+  }
+
+  // Super Peel Out: hold UP + Z, then release Z.
+  // It is intentionally faster than Spin Dash and keeps Sonic facing forward.
+  if(p.grounded && down("ArrowUp") && (down("z")||down("Z"))){
+    p.peel=true;
+    p.peelCharge=clamp(p.peelCharge+.65,0,20);
+    p.vx*=.80;
+    spawnParticles(p.x,p.y+p.h/2,Math.random()<.25?1:0);
+  } else if(p.peel && !down("z")&&!down("Z")){
+    const sign=dir || p.facing || Math.sign(p.vx)||1;
+    p.vx=sign*(PHYS.peelBase+p.peelCharge*.72);
+    p.abilityBoostTimer=999;
+    p.speedUnlocked=true;
+    p.peel=false;p.peelCharge=0;p.rolling=false;
+    spawnParticles(p.x,p.y+p.h/2,22);
+    shake=6;
+  }
+
+  // Aerial Spin Dash: hold Z only. Arrow keys aim the launch vector.
+  // Sonic is completely suspended while charging; gravity resumes only after release.
+  if(!p.grounded && !p.homing && (down("z")||down("Z"))){
+    if(!p.airSpindash){
+      p.airSpindash=true;
+      p.airSpindashCharge=0;
+      p.airAimX=Math.sign(p.vx)||p.facing||1;
+      p.airAimY=0;
+      p.rolling=true;
+    }
+    const aimX=(right?1:0)-(left?1:0);
+    const aimY=(down("ArrowUp")?-1:0)+(down("ArrowDown")?1:0);
+    if(aimX!==0 || aimY!==0){
+      const ad=Math.hypot(aimX,aimY)||1;
+      p.airAimX=aimX/ad; p.airAimY=aimY/ad;
+    }
+    p.airSpindashCharge=clamp(p.airSpindashCharge+.55,0,20);
+    p.vx=0; p.vy=0;
+    spawnParticles(p.x,p.y+p.h/2,Math.random()<.30?2:0);
+  } else if(p.airSpindash && !down("z") && !down("Z")){
+    const launchSpeed=PHYS.spinDashBase+p.airSpindashCharge*PHYS.spinDashPerCharge;
+    p.vx=p.airAimX*launchSpeed;
+    p.vy=p.airAimY*launchSpeed;
+    p.abilityBoostTimer=999;
+    p.speedUnlocked=true;
+    p.airSpindash=false;
+    p.airSpindashCharge=0;
+    p.rolling=true;
+    spawnParticles(p.x,p.y+p.h/2,18);
+    shake=5;
+  }
+
+  // Jump / homing.
+  if(hit(" ") && p.grounded && !p.spindash && !p.peel){
+    p.vy=PHYS.jump;
+    p.grounded=false;p.jumping=true;p.rolling=true;
+    spawnParticles(p.x,p.y+p.h/2,8);
+  } else if(hit(" ") && !p.grounded){
+    tryHoming();
+  }
+
+  if(p.grounded){
+    p.coyote=.10;
+    if(dir!==0){
+      const accel=p.rolling?PHYS.accel*.65:PHYS.accel;
+      p.vx+=dir*accel;
+      // Stronger ground braking: Sonic should feel responsive rather than ice-skating.
+      if(dir!==0 && Math.sign(p.vx)!==dir && Math.abs(p.vx)>0) p.vx*=.72;
+    }
+    // Slope acceleration.
+    const g=groundHeightAt(p.x);
+    const g2=groundHeightAt(p.x+8);
+    if(g<650 && g2<650){
+      const slope=(g2-g)/8;
+      p.vx+=slope*PHYS.slopeGravity;
+    }
+    // Momentum system: normal running builds quickly to a fixed cap.
+    // Once an ability breaks the cap, the extra speed is retained until Sonic
+    // actually comes to a stop; it is never silently clamped back down.
+    if(!p.spindash && !p.peel && !p.airSpindash){
+      if(dir===0) p.vx*=p.speedUnlocked ? .992 : .88;
+      const cap=p.speedUnlocked ? 46 : PHYS.maxSpeed;
+      p.vx=clamp(p.vx,-cap,cap);
+      if(dir===0 && Math.abs(p.vx)<.18){ p.vx=0; p.speedUnlocked=false; }
+      if(p.speedUnlocked && Math.abs(p.vx)<1.0 && dir===0){ p.speedUnlocked=false; }
+    }
+    if(down("ArrowDown") && Math.abs(p.vx)>4) p.rolling=true;
+    if(!down("ArrowDown") && Math.abs(p.vx)<2) p.rolling=false;
+    p.vy=0;
+  }else{
+    p.coyote-=dt;
+    const airCap=p.speedUnlocked?46:PHYS.maxSpeed;
+    // Air control may steer Sonic, but a normal jump cannot create extra speed.
+    if(dir!==0){
+      const before=Math.abs(p.vx);
+      p.vx+=dir*PHYS.airAccel;
+      if(!p.speedUnlocked && Math.abs(p.vx)>airCap) p.vx=Math.sign(p.vx)*airCap;
+      // Never let a jump itself increase horizontal speed above the speed Sonic had when leaving ground.
+      if(!p.speedUnlocked && Math.abs(p.vx)>Math.max(before,PHYS.maxSpeed)) p.vx=Math.sign(p.vx)*Math.max(before,PHYS.maxSpeed);
+    }
+    p.vx=clamp(p.vx,p.speedUnlocked?-46:-PHYS.maxSpeed,p.speedUnlocked?46:PHYS.maxSpeed);
+    p.vy+=PHYS.gravity;
+    p.vy=clamp(p.vy,-30,24);
+    // Release jump early for variable jump height.
+    if(!down(" ") && p.vy<0) p.vy+=PHYS.jumpRelease;
+  }
+
+  const prevPlayerX=p.x;
+  const prevPlayerY=p.y;
+  const nextPlayerX=p.x+p.vx;
+  const nextPlayerY=p.y+p.vy;
+  p.x=nextPlayerX;
+  p.y=nextPlayerY;
+
+  // Homing dash steering: while the attack is active, continuously steer toward
+  // the locked target instead of firing a one-frame projectile and hoping the
+  // target happens to be on its line. It remains a homing attack, not a speed
+  // unlock, and ends when the target is struck or the short homing window ends.
+  if(p.homing && p.homingTarget){
+    const t=p.homingTarget;
+    const dx=t.x-p.x, dy=t.y-(p.y+20);
+    const d=Math.max(1,Math.hypot(dx,dy));
+    const dashSpeed=42;
+    p.vx=(dx/d)*dashSpeed;
+    p.vy=(dy/d)*dashSpeed;
+  }
+
+  // Finish sign: the level ends when Sonic reaches the post.
+  if(!levelComplete && Math.abs(p.x-world.finishSign.x)<45){
+    levelComplete=true;
+    finishTimer=0;
+    const finishGood=world.machines.length>0&&world.machines.every(m=>m.destroyed);
+    musicPlayClear(finishGood);
+    p.vx*=.35;
+    spawnParticles(world.finishSign.x,p.y+10,35);
+    shake=8;
+  }
+
+  if(levelComplete){
+    finishTimer+=dt;
+    p.vx*=.90;
+    p.vy*=.90;
+  }
+
+  // Ring collection.
+  for(let i=world.rings.length-1;i>=0;i--){
+    const r=world.rings[i];
+    if(Math.hypot(p.x-r.x,p.y+20-r.y)<28){
+      p.rings++;
+      spawnParticles(r.x,r.y,5);
+      world.rings.splice(i,1);
+    }
+  }
+
+  // Homing impact on target.
+  if(p.homing){
+    for(const t of world.homingTargets){
+      if(Math.hypot(p.x-t.x,p.y-t.y)<30){
+        p.homing=false;p.nhome=false;p.homingTarget=null;p.vy=-8;p.vx=Math.sign(p.vx||p.facing)*Math.max(Math.abs(p.vx)*.88,16);
+        spawnParticles(t.x,t.y,18);shake=6;
+      }
+    }
+    if(p.homingTimer<=0){p.homing=false;p.homingTarget=null;}
+  }
+
+  // Robot generators exist only in the Past. Hit them while rolling, Spin Dashing,
+  // or with a Homing Attack to destroy them. Destroying all generators changes
+  // the future of this stage into a Good Future.
+  if(timeline==="past") {
+    for(const m of world.machines){
+      if(m.destroyed) continue;
+      const d=Math.hypot(p.x-m.x,(p.y+20)-m.y);
+      if(d<48 && (p.rolling || p.spindash || p.airSpindash || p.homing || Math.abs(p.vx)>10)){
+        m.hp--;
+        p.vx*=1.05;
+        p.vy=-7;
+        spawnParticles(m.x,m.y,20);
+        shake=7;
+        if(m.hp<=0){
+          m.destroyed=true;
+          spawnParticles(m.x,m.y,40);
+        }
+      }
+    }
+  }
+
+  // Springs.
+  for(const s of world.springs){
+    if(Math.abs(p.x-s.x)<28 && p.y+24>=s.y-10 && p.y+24<=s.y+18 && p.vy>=0){
+      p.y=s.y-45;p.vy=-s.power;p.grounded=false;p.jumping=true;
+      spawnParticles(s.x,s.y,14);shake=5;
+    }
+  }
+
+  // Ground + floating-platform collision. Platforms are real standable surfaces.
+  if(p.vy>=0){
+    const prevBottom=p.y+p.h/2-p.vy;
+    const nextBottom=p.y+p.h/2;
+    const surface=platformSurfaceAt(p.x-p.vx,p.x,prevBottom,nextBottom);
+    if(surface!==null){
+      p.y=surface-p.h/2;p.vy=0;p.grounded=true;p.jumping=false;p.nhome=false;
+      p.angle=0;
+      if(Math.abs(p.vx)>6) p.rolling=true;
+      if(p.x>p.lastSafeX+300)p.lastSafeX=p.x;
+    }else p.grounded=false;
+  }
+
+  // Simple underside/side protection.
+  if(p.y>760) respawn();
+
+  // World bounds.
+  p.x=clamp(p.x,-450,world.width);
+  updateSonicTrail(dt);
+}
+
+function drawFuji(cx, baseY, scale, style){
+  const h=250*scale, w=420*scale;
+  ctx.save(); ctx.translate(cx,baseY);
+  ctx.fillStyle=style.mountain;
+  ctx.beginPath();
+  ctx.moveTo(-w*.52,0);ctx.lineTo(-w*.30,-h*.34);ctx.lineTo(-w*.10,-h*.67);ctx.lineTo(0,-h);
+  ctx.lineTo(w*.11,-h*.68);ctx.lineTo(w*.30,-h*.34);ctx.lineTo(w*.52,0);ctx.closePath();ctx.fill();
+  ctx.fillStyle=style.snow;
+  ctx.beginPath();ctx.moveTo(-w*.18,-h*.63);ctx.lineTo(0,-h);ctx.lineTo(w*.18,-h*.63);ctx.lineTo(w*.11,-h*.68);ctx.lineTo(0,-h*.79);ctx.lineTo(-w*.11,-h*.68);ctx.closePath();ctx.fill();
+  ctx.strokeStyle=style.ridge;ctx.lineWidth=Math.max(2,5*scale);
+  for(let i=-2;i<=2;i++){ctx.beginPath();ctx.moveTo(i*w*.08,-h*.12);ctx.lineTo(i*w*.14,-h*.45);ctx.lineTo(i*w*.05,-h*.70);ctx.stroke();}
+  ctx.restore();
+}
+function drawTree(x,y,scale,leaf,trunk){
+  ctx.strokeStyle=trunk;ctx.lineWidth=7*scale;ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x,y-48*scale);ctx.stroke();
+  ctx.fillStyle=leaf;for(const [dx,dy,r] of [[-18,-48,22],[8,-60,26],[28,-45,19],[0,-76,20]]){ctx.beginPath();ctx.arc(x+dx*scale,y+dy*scale,r*scale,0,Math.PI*2);ctx.fill();}
+}
+function drawTorii(x,y,scale,color){
+  ctx.strokeStyle=color;ctx.lineWidth=6*scale;ctx.beginPath();ctx.moveTo(x-28*scale,y);ctx.lineTo(x-28*scale,y-58*scale);ctx.moveTo(x+28*scale,y);ctx.lineTo(x+28*scale,y-58*scale);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(x-38*scale,y-58*scale);ctx.lineTo(x+38*scale,y-58*scale);ctx.moveTo(x-31*scale,y-47*scale);ctx.lineTo(x+31*scale,y-47*scale);ctx.stroke();
+}
+function visualEra(){
+  if(!editorOpen) return timeline;
+  return editorEra;
+}
+function visualEraKind(){
+  const e=visualEra();
+  return (e==='badFuture'||e==='goodFuture')?'future':e;
+}
+function visualGoodFuture(){
+  if(editorOpen) return editorEra==='goodFuture';
+  return world.machines.every(m=>m.destroyed);
+}
+function drawBackground(){
+  const goodFuture=visualGoodFuture();
+  let c;
+  if(visualEraKind()==='past') c={sky1:'#e7bd82',sky2:'#fff1d0',lake:'#4e8580',lake2:'#78b7a9',far:'#536a52',mount:'#59635b',snow:'#fff3d8',shore:'#456341'};
+  else if(visualEraKind()==='future'&&!goodFuture) c={sky1:'#252d31',sky2:'#566063',lake:'#263d3e',lake2:'#3d4d4d',far:'#313a38',mount:'#34393a',snow:'#9da2a0',shore:'#252d2d'};
+  else if(visualEraKind()==='future') c={sky1:'#63d9ee',sky2:'#effff9',lake:'#319aa5',lake2:'#79d8ce',far:'#5b9864',mount:'#526d68',snow:'#fff',shore:'#3e8050'};
+  else c={sky1:'#69cfee',sky2:'#effcff',lake:'#3e9faa',lake2:'#78d0ca',far:'#5c8967',mount:'#586f6d',snow:'#fff',shore:'#477f55'};
+
+  const g=ctx.createLinearGradient(0,0,0,H);g.addColorStop(0,c.sky1);g.addColorStop(1,c.sky2);ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+
+  // Stable clouds: attached to the sky, never random drifting leaves.
+  ctx.fillStyle='rgba(255,255,255,.58)';
+  for(let i=-2;i<9;i++){
+    const x=i*430-((cameraX*.025)%430), y=48+(i%4)*34;
+    ctx.beginPath();ctx.ellipse(x,y,75,14,0,0,Math.PI*2);ctx.ellipse(x+55,y-9,52,19,0,0,Math.PI*2);ctx.ellipse(x+108,y,62,14,0,0,Math.PI*2);ctx.fill();
+  }
+
+  // Distant wooded foothills.
+  ctx.fillStyle=c.far;ctx.globalAlpha=.78;ctx.beginPath();ctx.moveTo(0,H*.55);
+  for(let x=0;x<=W;x+=55){const wx=x+cameraX*.035;const yy=H*.55-26*Math.sin(wx/210)-12*Math.sin(wx/77);ctx.lineTo(x,yy);}
+  ctx.lineTo(W,H*.72);ctx.lineTo(0,H*.72);ctx.closePath();ctx.fill();ctx.globalAlpha=1;
+
+  // Act 2 deep-forest canopy. The foliage is attached to the TOP edge of the
+  // screen, like towering Japanese cypress trees surrounding the road. It is
+  // deliberately drawn behind the level so it never blocks Sonic's route.
+  const forestStart=18400;
+  if(p.x>=forestStart) forestSeen=true;
+  const forestOn=forestSeen;
+  if(forestOn){
+    ctx.globalAlpha=1;
+    let trunk='#4b382b', leaf='#294c2f';
+    if(visualEraKind()==='past'){trunk='#594331';leaf='#355737';}
+    else if(visualEraKind()==='future'&&!goodFuture){trunk='#242d2a';leaf='#26352f';}
+    else if(visualEraKind()==='future'){trunk='#416044';leaf='#277444';}
+    ctx.save();
+    ctx.globalAlpha=1;
+    // Dark canopy band at the very top, with irregular hanging foliage.
+    ctx.fillStyle=leaf;
+    ctx.beginPath();ctx.moveTo(0,0);
+    for(let x=0;x<=W+80;x+=55){
+      const y=18+18*Math.sin((x+cameraX*.06)/95)+10*Math.sin((x+cameraX*.11)/37);
+      ctx.lineTo(x,y+55);
+    }
+    ctx.lineTo(W,0);ctx.closePath();ctx.fill();
+    // Tall trunks stay behind the road, mostly outside the playable center.
+    for(let i=-2;i<10;i++){
+      const x=i*190-((cameraX*.12)%190)+70;
+      const lean=Math.sin(i*1.7)*24;
+      ctx.fillStyle=trunk;
+      ctx.beginPath();ctx.moveTo(x-7, H*.72);ctx.lineTo(x+lean-5,20);ctx.lineTo(x+lean+7,20);ctx.lineTo(x+7,H*.72);ctx.closePath();ctx.fill();
+      ctx.fillStyle=leaf;
+      ctx.beginPath();ctx.arc(x+lean,H*.04,72+(i%3)*12,0,Math.PI*2);ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // Mount Fuji stays centered in the composition because Sonic is traveling around the lake.
+  // It is opaque, with crisp snow and ridges instead of the old translucent repeated copies.
+  const fx=W*.50, base=H*.69, h=Math.min(H*.48,315), half=Math.min(W*.34,300);
+  ctx.fillStyle=c.mount;ctx.beginPath();
+  ctx.moveTo(fx-half,base);ctx.lineTo(fx-half*.66,base-h*.31);ctx.lineTo(fx-half*.36,base-h*.62);
+  ctx.lineTo(fx,base-h);ctx.lineTo(fx+half*.36,base-h*.62);ctx.lineTo(fx+half*.66,base-h*.31);ctx.lineTo(fx+half,base);ctx.closePath();ctx.fill();
+  ctx.fillStyle=c.snow;ctx.beginPath();ctx.moveTo(fx-half*.34,base-h*.60);ctx.lineTo(fx,base-h);ctx.lineTo(fx+half*.34,base-h*.60);ctx.lineTo(fx+half*.19,base-h*.67);ctx.lineTo(fx,base-h*.81);ctx.lineTo(fx-half*.19,base-h*.67);ctx.closePath();ctx.fill();
+  ctx.strokeStyle='rgba(28,47,45,.42)';ctx.lineWidth=5;
+  for(let j=-3;j<=3;j++){ctx.beginPath();ctx.moveTo(fx+j*30,base-h*.16);ctx.lineTo(fx+j*48,base-h*.53);ctx.stroke();}
+
+  // Continuous lake.
+  const lt=H*.69;ctx.fillStyle=c.lake;ctx.fillRect(0,lt,W,H-lt);
+  ctx.fillStyle=c.lake2;ctx.globalAlpha=.28;
+  for(let i=0;i<55;i++){const x=i*92-((cameraX*.10)%92),y=lt+12+(i%15)*13;ctx.fillRect(x,y,42+(i%5)*17,2);}
+  ctx.globalAlpha=1;
+
+  // Permanent Fuji reflection, aligned with the centered mountain.
+  ctx.save();ctx.beginPath();ctx.rect(0,lt,W,H-lt);ctx.clip();ctx.globalAlpha=.25;ctx.fillStyle=c.mount;
+  ctx.beginPath();ctx.moveTo(fx-half*.78,lt);ctx.lineTo(fx-half*.43,lt+h*.25);ctx.lineTo(fx,lt+h*.58);ctx.lineTo(fx+half*.43,lt+h*.25);ctx.lineTo(fx+half*.78,lt);ctx.closePath();ctx.fill();
+  ctx.fillStyle=c.snow;ctx.globalAlpha=.13;ctx.beginPath();ctx.moveTo(fx-half*.28,lt);ctx.lineTo(fx,lt+h*.45);ctx.lineTo(fx+half*.28,lt);ctx.closePath();ctx.fill();ctx.restore();ctx.globalAlpha=1;
+
+  // Shoreline and period-specific distant details.
+  if(visualEraKind()==='future'&&!goodFuture){
+    ctx.fillStyle='rgba(18,23,23,.92)';ctx.fillRect(0,lt-35,W,42);
+    for(let i=-1;i<15;i++){
+      const x=i*210-((cameraX*.16)%210), bh=58+(i%4)*28;
+      ctx.fillStyle=i%2?'#252b2c':'#303638';ctx.fillRect(x,lt-30-bh,82,bh+30);
+      ctx.fillStyle='#171b1c';ctx.fillRect(x+29,lt-30-bh-65,24,65);
+      ctx.fillStyle='rgba(100,90,75,.24)';ctx.beginPath();ctx.ellipse(x+40,lt-30-bh-76,75,23,0,0,Math.PI*2);ctx.fill();
+    }
+    ctx.fillStyle='rgba(82,72,60,.24)';ctx.fillRect(0,lt+4,W,70);
+  }else{
+    ctx.fillStyle=c.shore;ctx.fillRect(0,lt-25,W,28);
+    if(visualEraKind()==='past'){
+      // Draw the gates first so the shoreline bushes/foliage sit in front of them.
+      for(let i=-1;i<8;i++){const x=i*380-((cameraX*.11)%380)+120,y=lt-18;drawTorii(x,y,.72,'#743d2f');}
+    }
+    for(let i=-1;i<18;i++){
+      const x=i*160-((cameraX*.14)%160), h2=24+(i%5)*8;
+      ctx.fillStyle=c.shore;ctx.beginPath();ctx.arc(x,lt-18,20+h2*.3,0,Math.PI*2);ctx.arc(x+24,lt-29,23+h2*.35,0,Math.PI*2);ctx.arc(x+48,lt-18,18+h2*.28,0,Math.PI*2);ctx.fill();
+    }
+    if(visualEraKind()==='future'){
+      ctx.strokeStyle='rgba(235,255,245,.72)';ctx.lineWidth=3;
+      for(let i=0;i<8;i++){const x=i*360-((cameraX*.13)%360)+150;ctx.beginPath();ctx.moveTo(x,lt-5);ctx.lineTo(x,lt-48);ctx.stroke();ctx.beginPath();ctx.arc(x,lt-54,13,0,Math.PI*2);ctx.stroke();}
+    }
+  }
+}
+function sx(x){return x-cameraX;}
+function sy(y){return y-cameraY;}
+
+function drawForeground(){
+  const good=visualGoodFuture();
+  const showGoodForeground=(timeline==='future'&&good)||(timeline==='present'&&good);
+  const bad=timeline==='future'&&!good;
+  const forestStart=18400;
+  const start=Math.floor((cameraX*.96)/150)-3;
+  const end=start+Math.ceil(W/150)+7;
+  ctx.save();
+  for(let i=start;i<=end;i++){
+    const wx=i*150+30, x=wx-cameraX*.96, base=H+18;
+    const type=((i%8)+8)%8;
+    const inForest=wx>=forestStart;
+    ctx.globalAlpha=1;
+
+    if(inForest){
+      // Act 2 forest: the giant trees belong to the BACKGROUND.
+      // Keep the playable road completely clear; only narrow trunks sit at the
+      // far edges of the route, while the canopy is drawn at the top of the screen.
+      const forestSide = x < 145 || x > W-145;
+      if(forestSide){
+        const scale=1.15+(type%3)*.12;
+        let trunk,leaf;
+        if(bad){ trunk='#29302d'; leaf=type%2?'#303a35':'#39443f'; }
+        else if(timeline==='past'){ trunk='#5b4432'; leaf=type%2?'#385737':'#45663f'; }
+        else if(showGoodForeground){ trunk='#466044'; leaf=type%2?'#2f824b':'#3f9b58'; }
+        else { trunk='#4c513d'; leaf=type%2?'#3f7042':'#4d7e49'; }
+        ctx.globalAlpha=1;
+        ctx.fillStyle=trunk;
+        ctx.fillRect(x-5*scale,H*.32,10*scale,H*.72);
+        ctx.fillStyle=leaf;
+        // Small side foliage only; the huge canopy is rendered behind everything.
+        for(let j=0;j<3;j++){
+          ctx.beginPath();ctx.arc(x+(j-1)*20*scale,H*.18+j*34,42*scale,0,Math.PI*2);ctx.fill();
+        }
+      }
+      continue;
+    }
+
+    if(bad){
+      ctx.globalAlpha=.70;ctx.fillStyle='#20292b';ctx.strokeStyle='#687674';ctx.lineWidth=5;
+      const h=72+(type%4)*18;ctx.fillRect(x-22,base-h,52,h);ctx.fillRect(x+30,base-h+20,30,h-20);
+      ctx.beginPath();ctx.moveTo(x-6,base-h);ctx.lineTo(x-6,base-h-40);ctx.lineTo(x+14,base-h-60);ctx.stroke();
+      if(type%2===0){ctx.strokeStyle='#87938f';ctx.beginPath();ctx.arc(x+8,base-h-10,22,0,Math.PI*2);ctx.stroke();}
+    }else if(timeline==='past'){
+      ctx.globalAlpha=.82;
+      if(type===0||type===4){ctx.fillStyle='#365d35';for(let j=0;j<4;j++){ctx.beginPath();ctx.arc(x+j*14,base-28-(j%2)*8,17+(j%3)*4,0,Math.PI*2);ctx.fill();}}
+      else if(type===1||type===5){ctx.strokeStyle='#507d3f';ctx.lineWidth=4;for(let j=0;j<10;j++){ctx.beginPath();ctx.moveTo(x+j*6,base);ctx.lineTo(x+j*6-4,base-25-(j%3)*5);ctx.stroke();}}
+      else{ctx.fillStyle='#666d64';ctx.beginPath();ctx.moveTo(x-28,base);ctx.lineTo(x-13,base-28);ctx.lineTo(x+12,base-34);ctx.lineTo(x+31,base);ctx.closePath();ctx.fill();}
+    }else if(showGoodForeground){
+      ctx.globalAlpha=.88;
+      if(type===0||type===4){ctx.fillStyle='#d9f4dd';ctx.strokeStyle='#4f9e65';ctx.lineWidth=4;ctx.fillRect(x-22,base-72,46,72);ctx.beginPath();ctx.arc(x+1,base-80,21,0,Math.PI*2);ctx.stroke();ctx.beginPath();ctx.moveTo(x+1,base-80);ctx.lineTo(x+1,base-99);ctx.stroke();}
+      else if(type===1||type===5){ctx.strokeStyle='#31864d';ctx.lineWidth=5;for(let j=0;j<12;j++){ctx.beginPath();ctx.moveTo(x+j*6,base);ctx.lineTo(x+j*6-8,base-46-(j%4)*7);ctx.stroke();}ctx.fillStyle='#4ca967';ctx.beginPath();ctx.arc(x+22,base-33,30,0,Math.PI*2);ctx.arc(x+50,base-27,24,0,Math.PI*2);ctx.fill();}
+      else{ctx.fillStyle='#707d73';ctx.beginPath();ctx.moveTo(x-28,base);ctx.lineTo(x-13,base-28);ctx.lineTo(x+12,base-34);ctx.lineTo(x+31,base);ctx.closePath();ctx.fill();}
+    }else{
+      ctx.globalAlpha=.82;
+      if(type===0||type===3){ctx.strokeStyle='#c7a64c';ctx.lineWidth=4;for(let j=0;j<10;j++){ctx.beginPath();ctx.moveTo(x+j*7,base);ctx.lineTo(x+j*7-5,base-34-(j%3)*6);ctx.stroke();}}
+      else if(type===1||type===4){ctx.fillStyle='#3f8050';for(let j=0;j<4;j++){ctx.beginPath();ctx.arc(x+j*15,base-28-(j%2)*6,22+(j%2)*3,0,Math.PI*2);ctx.fill();}}
+      else{ctx.fillStyle='#68736b';ctx.beginPath();ctx.moveTo(x-28,base);ctx.lineTo(x-13,base-28);ctx.lineTo(x+12,base-34);ctx.lineTo(x+31,base);ctx.closePath();ctx.fill();}
+    }
+  }
+  ctx.restore();ctx.globalAlpha=1;
+}
+function drawTitleCard(){
+  if(titleCardTimer<=0) return;
+  const elapsed=TITLE_CARD_DURATION-titleCardTimer;
+  const t=clamp(elapsed/.55,0,1);
+  const out=clamp((elapsed-2.35)/.9,0,1);
+  ctx.save();
+  // A Sonic-CD-inspired zone card: black field, blue vertical strip with a red
+  // zig-zag edge, and stacked yellow zone lettering.
+  const slide=(1-t)*Math.min(180,W*.22);
+  const barX=W*.43-slide;
+  const barW=Math.max(54,W*.075);
+  ctx.fillStyle='#26288d';ctx.fillRect(barX,0,barW,H);
+  ctx.fillStyle='#e51f2b';
+  ctx.beginPath();
+  ctx.moveTo(barX,0);
+  for(let y=0;y<=H+28;y+=32){
+    ctx.lineTo(barX+18,y+16);ctx.lineTo(barX,y+32);
+  }
+  ctx.closePath();ctx.fill();
+
+  const tx=barX+barW+Math.max(24,W*.018)-out*W*.65;
+  ctx.textAlign='left';
+  // Black outline keeps the title readable over the live level background.
+  ctx.lineJoin='round';ctx.lineWidth=Math.max(5,Math.min(9,W*.009));ctx.strokeStyle='#000';
+  ctx.fillStyle='#ffe900';
+  ctx.font='900 '+Math.max(34,Math.min(72,W*.095))+'px Arial Narrow,Arial,sans-serif';
+  ctx.strokeText('FANTASTIC',tx,H*.42);ctx.fillText('FANTASTIC',tx,H*.42);
+  ctx.strokeText('FUJI',tx,H*.55);ctx.fillText('FUJI',tx,H*.55);
+  ctx.fillStyle='#fff';
+  ctx.font='900 '+Math.max(28,Math.min(52,W*.065))+'px Arial Narrow,Arial,sans-serif';
+  ctx.strokeText('ACT '+LEVEL_ACT,tx,H*.68);ctx.fillText('ACT '+LEVEL_ACT,tx,H*.68);
+  ctx.font='900 '+Math.max(11,Math.min(17,W*.019))+'px monospace';
+  ctx.strokeText('SONIC THE HEDGEHOG CD',tx+4,H*.76);ctx.fillText('SONIC THE HEDGEHOG CD',tx+4,H*.76);
+  ctx.globalAlpha=.8;
+  ctx.font='bold '+Math.max(9,Math.min(13,W*.014))+'px monospace';
+  ctx.strokeText('LAKE FUJI',tx+4,H*.81);ctx.fillText('LAKE FUJI',tx+4,H*.81);
+  ctx.restore();
+}
+
+function drawWorld(){
+  // Water at the bottom of the specifically labeled gap(s). Drawn first so
+  // the terrain lips and the bridge sit naturally in front of it.
+  for(const g of (world.waterGaps||[])){
+    const x=sx(g.x), w=g.w, top=sy(g.top);
+    ctx.fillStyle=visualEraKind()==='future'?'#2d7f88':visualEraKind()==='past'?'#3d8e8b':'#319aa5';
+    ctx.fillRect(x,top,w,H-top);
+    ctx.fillStyle='rgba(160,240,235,.45)';
+    for(let yy=top+18;yy<H;yy+=34){
+      ctx.fillRect(x+18,yy,Math.max(0,w-36),3);
+    }
+  }
+
+  // Concept-art terrain fill: the collision surfaces and this silhouette share
+  // the same coordinates, so hills/dips remain visible as actual terrain rather
+  // than turning into floating platforms.
+  const drawTerrainProfile=(pts)=>{
+    if(!pts||pts.length<2)return;
+    const goodFuture=visualGoodFuture();
+    const groundMain=visualEraKind()==="past"?"#87623f":visualEraKind()==="future"?(goodFuture?"#39a85f":"#284f55"):"#3a9b55";
+    const groundTop=visualEraKind()==="past"?"#c68a4d":visualEraKind()==="future"?(goodFuture?"#8be05e":"#397e78"):"#7acb57";
+    ctx.fillStyle=groundMain;ctx.beginPath();
+    ctx.moveTo(sx(pts[0].x),sy(pts[0].y));
+    for(let i=1;i<pts.length;i++)ctx.lineTo(sx(pts[i].x),sy(pts[i].y));
+    ctx.lineTo(sx(pts[pts.length-1].x),H+30);
+    ctx.lineTo(sx(pts[0].x),H+30);ctx.closePath();ctx.fill();
+    ctx.strokeStyle=groundTop;ctx.lineWidth=12;ctx.lineJoin='round';ctx.lineCap='round';
+    ctx.beginPath();ctx.moveTo(sx(pts[0].x),sy(pts[0].y));
+    for(let i=1;i<pts.length;i++)ctx.lineTo(sx(pts[i].x),sy(pts[i].y));ctx.stroke();
+  };
+  for(const profile of (window.__editorSections||[window.__conceptTerrain1,window.__conceptTerrain2])) drawTerrainProfile(profile);
+
+  // Ground blocks
+  const goodFuture=visualGoodFuture();
+  const groundMain=visualEraKind()==="past"?"#87623f":visualEraKind()==="future"?(goodFuture?"#39a85f":"#284f55"):"#3a9b55";
+  const groundTop=visualEraKind()==="past"?"#c68a4d":visualEraKind()==="future"?(goodFuture?"#8be05e":"#397e78"):"#7acb57";
+  ctx.fillStyle=groundMain;
+  for(const s of world.solids){
+    ctx.fillRect(sx(s.x),sy(s.y),s.w,s.h);
+    ctx.fillStyle=groundTop;
+    ctx.fillRect(sx(s.x),sy(s.y),s.w,12);
+    ctx.fillStyle=groundMain;
+  }
+  // checker-like dirt
+  ctx.fillStyle="rgba(100,70,40,.22)";
+  for(const s of world.solids){
+    for(let x=s.x;x<s.x+s.w;x+=32)
+      for(let y=s.y+20;y<s.y+s.h;y+=32)
+        if(((x/32+y/32)|0)%2===0)ctx.fillRect(sx(x),sy(y),16,16);
+  }
+
+  // slopes
+  ctx.strokeStyle="#7acb57";ctx.lineWidth=14;ctx.lineCap="round";
+  for(const s of world.slopes){
+    ctx.beginPath();ctx.moveTo(sx(s.x1),sy(s.y1));ctx.lineTo(sx(s.x2),sy(s.y2));ctx.stroke();
+  }
+
+  // Small labeled bridge from the concept art. It is the only separate
+  // rectangular bridge structure in the first terrain section.
+  if(world.bridge){
+    const b=world.bridge;
+    ctx.fillStyle=visualEraKind()==='past'?'#76543a':visualEraKind()==='future'?'#4d6664':'#6b5138';
+    ctx.fillRect(sx(b.x),sy(b.y),b.w,b.h);
+    ctx.fillStyle=visualEraKind()==='past'?'#b57d4a':visualEraKind()==='future'?'#7d9a96':'#9b7650';
+    ctx.fillRect(sx(b.x),sy(b.y),b.w,7);
+  }
+
+  // Large Sonic-style tube. Draw both bottom approaches so the same loop can
+  // be entered from either side, while the circular section remains one shared tube.
+  for(const L of world.loops){
+    prepareLoopTrack(L);
+    const drawPath=(pts,width,style)=>{
+      ctx.strokeStyle=style;ctx.lineWidth=width;ctx.lineCap='round';ctx.beginPath();
+      ctx.moveTo(sx(pts[0].x),sy(pts[0].y));
+      for(let i=1;i<pts.length;i++)ctx.lineTo(sx(pts[i].x),sy(pts[i].y));
+      ctx.stroke();
+    };
+    drawPath(L.trackBoth.left.pts,46,"#2b7f45");
+    drawPath(L.trackBoth.left.pts,10,"#8cdb62");
+    // The reverse track shares the same circular tube; only its opposite
+    // bottom approach/exit needs to be visible as a second entrance.
+    const rightBottom=L.trackBoth.right.pts;
+    const partial=rightBottom.slice(0,Math.min(37,rightBottom.length));
+    drawPath(partial,46,"#2b7f45");
+    drawPath(partial,10,"#8cdb62");
+  }
+
+  // springs
+  for(const s of world.springs){
+    ctx.fillStyle="#e33";ctx.fillRect(sx(s.x-15),sy(s.y-10),30,10);
+    ctx.strokeStyle="#fff";ctx.lineWidth=3;
+    for(let i=0;i<3;i++){
+      ctx.beginPath();ctx.moveTo(sx(s.x-12+i*8),sy(s.y-10));
+      ctx.lineTo(sx(s.x-8+i*8),sy(s.y-22));ctx.stroke();
+    }
+  }
+
+  // rings
+  for(const r of world.rings){
+    ctx.strokeStyle="#ffd72a";ctx.lineWidth=4;
+    ctx.beginPath();ctx.arc(sx(r.x),sy(r.y),9,0,Math.PI*2);ctx.stroke();
+    ctx.strokeStyle="#fff4a0";ctx.lineWidth=2;
+    ctx.beginPath();ctx.arc(sx(r.x-2),sy(r.y-2),5,-1.2,.8);ctx.stroke();
+  }
+
+  // Rocky formation under the generator. This is part of the continuous
+  // terrain silhouette, not a floating platform.
+  if(world.generatorRock){
+    const r=world.generatorRock;
+    ctx.fillStyle=visualEraKind()==='past'?'#6f543d':visualEraKind()==='future'?'#36575a':'#466b4c';
+    ctx.beginPath();
+    ctx.moveTo(sx(r.x1),sy(500));ctx.lineTo(sx(r.x1+90),sy(470));
+    ctx.lineTo(sx(r.x1+230),sy(445));ctx.lineTo(sx(r.x1+420),sy(430));
+    ctx.lineTo(sx(r.x2-180),sy(430));ctx.lineTo(sx(r.x2-70),sy(465));
+    ctx.lineTo(sx(r.x2),sy(520));ctx.lineTo(sx(r.x1),sy(520));ctx.closePath();ctx.fill();
+  }
+
+  // Robot generators in the Past. They are deliberately large and obvious.
+  if(visualEraKind()==="past") {
+    for(const m of world.machines){
+      if(m.destroyed) continue;
+      const x=sx(m.x), y=sy(m.y);
+      ctx.save();
+      ctx.translate(x,y);
+      ctx.fillStyle="#34343d";ctx.fillRect(-28,-42,56,70);
+      ctx.fillStyle="#f4c542";ctx.fillRect(-20,-31,40,9);
+      ctx.fillStyle="#7d8cff";ctx.beginPath();ctx.arc(0,-4,15,0,Math.PI*2);ctx.fill();
+      ctx.fillStyle="#111";ctx.beginPath();ctx.arc(0,-4,7,0,Math.PI*2);ctx.fill();
+      ctx.strokeStyle="#e44";ctx.lineWidth=4;ctx.strokeRect(-22,10,44,10);
+      ctx.fillStyle="#fff";ctx.font="bold 10px Arial";ctx.textAlign="center";ctx.fillText("TIME CORE",0,-48);
+      for(let i=0;i<m.hp;i++){ctx.fillStyle="#ffdf55";ctx.fillRect(-18+i*12,27,8,5);}
+      ctx.restore();
+    }
+  }
+
+  // Sonic CD-style time warp signs
+  for(const s of world.timeSigns){
+    const active = timeWarpSign && timeWarpSign.sign===s;
+    const signColor = s.type==="past" ? "#47d7ff" : "#ff4fd8";
+
+    ctx.save();
+    ctx.translate(sx(s.x),sy(s.y));
+    ctx.strokeStyle="#555";
+    ctx.lineWidth=5;
+    ctx.beginPath();ctx.moveTo(0,5);ctx.lineTo(0,48);ctx.stroke();
+
+    ctx.fillStyle=active ? "#fff" : signColor;
+    ctx.fillRect(-24,-28,48,30);
+
+    ctx.fillStyle="#111";
+    ctx.font="bold 12px Arial";
+    ctx.textAlign="center";
+    ctx.fillText(s.type.toUpperCase(),0,-9);
+
+    if(active){
+      ctx.strokeStyle="#fff";
+      ctx.lineWidth=3;
+      ctx.strokeRect(-29,-33,58,40);
+    }
+    ctx.restore();
+  }
+
+  // Finish post. Touching it completes the act.
+  {
+    const s=world.finishSign;
+    ctx.save();ctx.translate(sx(s.x),sy(s.y));
+    ctx.strokeStyle='#f4f4f4';ctx.lineWidth=7;ctx.beginPath();ctx.moveTo(0,55);ctx.lineTo(0,-8);ctx.stroke();
+    ctx.fillStyle='#fff';ctx.fillRect(-34,-40,68,32);
+    ctx.fillStyle='#e33';ctx.font='bold 12px Arial';ctx.textAlign='center';ctx.fillText('GOAL',0,-19);
+    ctx.fillStyle='#ffd72a';ctx.beginPath();ctx.arc(0,-2,7,0,Math.PI*2);ctx.fill();
+    ctx.restore();
+  }
+
+  // homing targets
+  for(const t of world.homingTargets){
+    ctx.fillStyle="#e33";ctx.beginPath();ctx.arc(sx(t.x),sy(t.y),12,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle="#fff";ctx.beginPath();ctx.arc(sx(t.x),sy(t.y),5,0,Math.PI*2);ctx.fill();
+  }
+}
+
+function drawSonicTrails(){
+  for(const t of sonicTrails){
+    const a=Math.max(0,t.life/t.max)*.48;
+    ctx.save();ctx.globalAlpha=a;ctx.translate(sx(t.x),sy(t.y));ctx.rotate(t.angle);
+    ctx.fillStyle='#1166e8';ctx.beginPath();ctx.arc(0,-3,19,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(6,-8,5,0,Math.PI*2);ctx.fill();
+    ctx.restore();
+  }
+}
+
+function drawPlayer(){
+  ctx.save();
+  ctx.translate(sx(p.x),sy(p.y));
+  ctx.rotate(p.angle);
+  if(p.invuln>0 && Math.floor(time*20)%2===0){ctx.globalAlpha=.4;}
+  // shadow
+  ctx.fillStyle="rgba(0,0,0,.2)";
+  if(p.grounded){ctx.beginPath();ctx.ellipse(0,23,22,6,0,0,Math.PI*2);ctx.fill();}
+  // simple blue Sonic-like character
+  ctx.fillStyle="#1166e8";
+  if(p.rolling||p.jumping||Math.abs(p.vx)>10){
+    ctx.beginPath();ctx.arc(0,0,22,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle="#fff";ctx.beginPath();ctx.arc(7,-6,5,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle="#111";ctx.beginPath();ctx.arc(9,-6,2,0,Math.PI*2);ctx.fill();
+  }else{
+    ctx.beginPath();ctx.arc(0,-5,18,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle="#fff";ctx.beginPath();ctx.ellipse(5,-9,5,7,0,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle="#111";ctx.beginPath();ctx.arc(6,-9,2,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle="#e33";ctx.fillRect(-16,12,15,7);ctx.fillRect(4,12,15,7);
+  }
+  ctx.restore();
+
+  // Aerial Spin Dash aiming guide. It stays visible only while charging,
+  // and its direction is exactly the direction used when Z is released.
+  if(p.airSpindash){
+    const len=110+Math.min(90,p.airSpindashCharge*5);
+    const ax=sx(p.x), ay=sy(p.y);
+    ctx.save();
+    ctx.strokeStyle="#fff";
+    ctx.globalAlpha=.9;
+    ctx.lineWidth=4;
+    ctx.setLineDash([10,7]);
+    ctx.beginPath();ctx.moveTo(ax,ay);ctx.lineTo(ax+p.airAimX*len,ay+p.airAimY*len);ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle="#fff";
+    ctx.beginPath();ctx.arc(ax+p.airAimX*len,ay+p.airAimY*len,7,0,Math.PI*2);ctx.fill();
+    ctx.restore();
+  }
+
+  // charge effects
+  if(p.spindash||p.peel||p.airSpindash){
+    ctx.strokeStyle=(p.spindash||p.airSpindash)?"#fff":"#ffd72a";ctx.lineWidth=4;
+    ctx.beginPath();ctx.arc(sx(p.x),sy(p.y),30+Math.sin(time*18)*3,0,Math.PI*2);ctx.stroke();
+  }
+}
+
+function drawParticles(dt){
+  for(let i=particles.length-1;i>=0;i--){
+    const q=particles[i];q.x+=q.vx;q.y+=q.vy;q.vy+=.12;q.life-=dt;
+    if(q.life<=0){particles.splice(i,1);continue;}
+    ctx.globalAlpha=Math.max(0,q.life);
+    ctx.fillStyle="#fff";ctx.fillRect(sx(q.x),sy(q.y),4,4);
+  }
+  ctx.globalAlpha=1;
+}
+
+function updateCamera(){
+  if(editorOpen)return;
+  const targetX=p.x-W*.38;
+  const targetY=p.y-H*.50;
+  cameraX=lerp(cameraX,targetX,.09);
+  cameraY=lerp(cameraY,targetY,.07);
+  cameraX=clamp(cameraX,-200,world.width-W+250);
+  cameraY=clamp(cameraY,-120,400);
+}
+
+function render(){
+  drawBackground();
+  ctx.save();
+  if(shake>0){
+    ctx.translate((Math.random()-.5)*shake,(Math.random()-.5)*shake);
+    shake*=.88;if(shake<.1)shake=0;
+  }
+  drawWorld();
+  drawForeground();
+  drawParticles(1/60);
+  drawSonicTrails();
+  drawPlayer();
+  ctx.restore();
+  drawTitleCard();
+  drawEditorOverlay();
+
+  if(timeWarpFlash>0){
+    ctx.fillStyle="rgba(255,255,255,"+Math.min(.9,timeWarpFlash*1.5)+")";
+    ctx.fillRect(0,0,W,H);
+  }
+  if(levelComplete){
+    const good=world.machines.length>0 && world.machines.every(m=>m.destroyed);
+    const pulse=1+Math.sin(finishTimer*5)*.025;
+    ctx.save();
+    ctx.fillStyle='rgba(4,8,20,.62)';ctx.fillRect(0,0,W,H);
+    // Stage-clear layout inspired by classic Sonic results screens.
+    const panelW=Math.min(620,W*.82),panelH=Math.min(360,H*.74);
+    const px=(W-panelW)/2,py=(H-panelH)/2;
+    ctx.fillStyle='rgba(8,18,38,.92)';ctx.fillRect(px,py,panelW,panelH);
+    ctx.strokeStyle='#fff';ctx.lineWidth=3;ctx.strokeRect(px+8,py+8,panelW-16,panelH-16);
+    ctx.textAlign='center';
+    ctx.fillStyle='#fff';
+    ctx.font='900 '+Math.max(22,Math.min(40,W*.045))+'px Arial Narrow,Arial,sans-serif';
+    ctx.fillText(good?'SONIC MADE A GOOD FUTURE!':'SONIC GOT THROUGH',W/2,py+72);
+    ctx.save();ctx.translate(W/2,py+122);ctx.scale(pulse,pulse);
+    ctx.fillStyle='#ffe900';
+    ctx.font='900 '+Math.max(30,Math.min(58,W*.065))+'px Arial Narrow,Arial,sans-serif';
+    ctx.fillText(LEVEL_NAME,W/2-W/2,0);
+    ctx.restore();
+    ctx.fillStyle='#fff';
+    ctx.font='900 '+Math.max(20,Math.min(34,W*.038))+'px Arial Narrow,Arial,sans-serif';
+    ctx.fillText('ACT '+LEVEL_ACT,W/2,py+162);
+
+    const score=p.rings*100;
+    const totalSeconds=levelTime;
+    const minutes=Math.floor(totalSeconds/60);
+    const seconds=(totalSeconds%60).toFixed(2).padStart(5,'0');
+    ctx.textAlign='left';ctx.font='900 16px monospace';
+    ctx.fillText('SCORE',px+52,py+215);ctx.fillText(String(score).padStart(6,'0'),px+190,py+215);
+    ctx.fillText('RINGS',px+52,py+248);ctx.fillText(String(p.rings).padStart(3,'0'),px+190,py+248);
+    ctx.fillText('TIME',px+52,py+281);ctx.fillText(minutes+"'"+seconds,px+190,py+281);
+    ctx.textAlign='center';ctx.fillStyle='#ffd72a';ctx.font='900 14px monospace';
+    ctx.fillText(good?'GOOD FUTURE':'FUTURE NOT SAVED',W/2,py+314);
+    ctx.fillStyle='#fff';ctx.font='bold 13px monospace';ctx.fillText('PRESS R TO PLAY AGAIN',W/2,py+340);
+    ctx.restore();
+  }
+
+  status.innerHTML=
+    "TIME: "+timeline.toUpperCase()+
+    "<br>SPEED: "+Math.abs(p.vx).toFixed(1)+(p.speedUnlocked?" / UNLOCKED":" / "+PHYS.maxSpeed)+
+    "<br>RINGS: "+p.rings+
+    "<br>LOOP: "+(p.loopIndex>=0?"ON":"OFF")+
+    (timeline==="future"?"<br>FUTURE: "+(world.machines.every(m=>m.destroyed)?"GOOD":"BAD"):"")+
+    (timeline==="past"?"<br>TIME CORE: "+(world.machines.every(m=>m.destroyed)?"DESTROYED":"ACTIVE"):"")+
+    "<br>"+(p.spindash?"SPINDASH "+Math.round(p.spindashCharge):"")+
+    (p.peel?"PEEL OUT (UP+Z) "+Math.round(p.peelCharge):"")+
+    (p.airSpindash?"<br>AIR SPINDASH "+Math.round(p.airSpindashCharge):"")+
+    (timeWarpSign ? "<br>TIME WARP: "+Math.min(3,timeWarpTimer).toFixed(1)+" / 3.0s" : "");
+}
+
+
+// ============================================================================
+// VISUAL LEVEL EDITOR
+// ============================================================================
+let editorOpen=false,editorMode='move',editorSection=0,editorDragging=null,editorGapStart=null,editorHistory=[],editorEra='present',editorFreeCam=true,editorPanDrag=null;
+const editorUI=document.getElementById('editorUI');
+const editorSectionEl=document.getElementById('editorSection');
+const editorObjectEl=document.getElementById('editorObject');
+function getEditorSections(){return window.__editorSections||[window.__conceptTerrain1||[],window.__conceptTerrain2||[]];}
+function cloneEditorSections(){return getEditorSections().map(a=>a.map(p=>({x:p.x,y:p.y})));}
+function editorSnapshot(){return JSON.stringify({era:editorEra,sections:cloneEditorSections(),waterGaps:(world.waterGaps||[]).map(g=>({...g})),loops:(world.loops||[]).map(l=>({...l})),bridge:world.bridge?({...world.bridge}):null,barriers:(world.barriers||[]).map(b=>({...b})),machines:(world.machines||[]).map(m=>({...m})),generatorRock:world.generatorRock?({...world.generatorRock}):null,timeSigns:(world.timeSigns||[]).map(x=>({...x})),forestStart:window.editorForestStart??23200,freeCam:editorFreeCam});}
+function editorPush(){editorHistory.push(editorSnapshot());if(editorHistory.length>60)editorHistory.shift();}
+function editorRestoreSnapshot(str){const d=JSON.parse(str);window.__editorSections=d.sections||[];window.__conceptTerrain1=window.__editorSections[0]||[];window.__conceptTerrain2=window.__editorSections[1]||[];world.waterGaps=d.waterGaps||[];world.loops=d.loops||[];world.bridge=d.bridge||null;world.barriers=d.barriers||[];world.machines=d.machines||[];world.generatorRock=d.generatorRock||null;world.timeSigns=d.timeSigns||world.timeSigns||[];window.editorForestStart=d.forestStart??23200;editorRebuildCollision();saveEditorScene(editorEra);}
+function editorRebuildCollision(){editorRebuildCollisionRaw();}
+function editorRefreshSections(){editorSectionEl.innerHTML='';getEditorSections().forEach((_,i)=>{const o=document.createElement('option');o.value=i;o.textContent='TERRAIN '+(i+1);editorSectionEl.appendChild(o);});editorSection=Math.min(editorSection,getEditorSections().length-1);editorSectionEl.value=String(editorSection);}
+function editorRefreshEraButtons(){editorUI.querySelectorAll('.era').forEach(b=>b.classList.toggle('active',b.dataset.era===editorEra));}
+function editorEnter(){editorOpen=true;editorUI.style.display='block';editorHistory=[];editorMode='move';editorEra='present';applyEditorScene(editorEra);editorSection=0;editorRefreshSections();cameraX=0;cameraY=0;editorRefreshEraButtons();editorRefreshModes();}
+function editorExit(){saveEditorScene(editorEra);editorOpen=false;editorUI.style.display='none';editorDragging=null;editorGapStart=null;editorPanDrag=null;}
+function editorSetMode(m){editorMode=m;editorDragging=null;editorGapStart=null;editorRefreshModes();}
+function editorRefreshModes(){for(const b of editorUI.querySelectorAll('[data-mode]'))b.classList.toggle('active',b.dataset.mode===editorMode);}
+function editorSelectEra(key){if(!timelineEditorData[key])return;saveEditorScene(editorEra);editorHistory=[];editorEra=key;applyEditorScene(key);editorSection=0;editorRefreshSections();editorRefreshEraButtons();cameraX=0;cameraY=0;musicSetEra(key);}
+function editorScreenToWorld(mx,my){return{x:mx+cameraX,y:my+cameraY};}
+function editorNearestPoint(wx,wy){const pts=editorSection===0?window.__conceptTerrain1:window.__conceptTerrain2;let best=-1,bd=Infinity;if(!pts)return{index:-1,dist:Infinity};for(let i=0;i<pts.length;i++){const d=Math.hypot(pts[i].x-wx,pts[i].y-wy);if(d<bd){bd=d;best=i;}}return{index:best,dist:bd};}
+function editorInsertPoint(wx,wy){const pts=editorSection===0?window.__conceptTerrain1:window.__conceptTerrain2;if(!pts||pts.length<2)return;editorPush();pts.push({x:wx,y:Math.max(250,Math.min(650,wy))});pts.sort((a,b)=>a.x-b.x);editorRebuildCollision();saveEditorScene(editorEra);}
+function editorDeletePoint(wx,wy){const pts=editorSection===0?window.__conceptTerrain1:window.__conceptTerrain2;if(!pts||pts.length<=2)return;const n=editorNearestPoint(wx,wy);if(n.index<0||n.dist>65)return;editorPush();pts.splice(n.index,1);editorRebuildCollision();saveEditorScene(editorEra);}
+function editorMovePoint(i,wx,wy){const pts=editorSection===0?window.__conceptTerrain1:window.__conceptTerrain2;if(!pts||i<0||i>=pts.length)return;const minX=i>0?pts[i-1].x+20:-Infinity,maxX=i<pts.length-1?pts[i+1].x-20:Infinity;pts[i].x=Math.max(minX,Math.min(maxX,wx));pts[i].y=Math.max(250,Math.min(650,wy));editorRebuildCollision();saveEditorScene(editorEra);}
+function editorNearestSign(wx,wy){let best=-1,bd=Infinity;for(let i=0;i<(world.timeSigns||[]).length;i++){const q=world.timeSigns[i],d=Math.hypot(q.x-wx,q.y-wy);if(d<bd){bd=d;best=i;}}return{index:best,dist:bd};}
+function editorMoveSign(i,wx,wy){const a=world.timeSigns;if(!a||i<0||i>=a.length)return;a[i].x=wx;a[i].y=Math.max(300,Math.min(650,wy));saveEditorScene(editorEra);}
+function editorSplitGap(x1,x2){if(x2<x1)[x1,x2]=[x2,x1];const pts=editorSection===0?window.__conceptTerrain1:window.__conceptTerrain2;if(!pts||pts.length<2||x2-x1<20)return;editorPush();const interp=x=>{for(let i=0;i<pts.length-1;i++){const a=pts[i],b=pts[i+1];if(x>=a.x&&x<=b.x){const t=(x-a.x)/(b.x-a.x||1);return{x,y:a.y+(b.y-a.y)*t};}}return null;};const left=[...pts.filter(p=>p.x<x1),interp(x1)].filter(Boolean);const right=[interp(x2),...pts.filter(p=>p.x>x2)].filter(Boolean);const sections=getEditorSections();sections[editorSection]=left;sections.splice(editorSection+1,0,right);window.__editorSections=sections;window.__conceptTerrain1=sections[0]||[];window.__conceptTerrain2=sections[1]||[];world.waterGaps.push({x:x1,w:x2-x1,top:560,editorGap:true});editorRebuildCollision();editorRefreshSections();saveEditorScene(editorEra);}
+function editorPlaceObject(wx,wy){editorPush();const type=editorObjectEl.value;if(type==='loop')world.loops.push({cx:wx,cy:wy,r:70});if(type==='bridge'){world.bridge={x:wx-120,y:wy,w:240,h:28};world.waterGaps.push({x:wx-120,w:240,top:wy+55,small:true,editorGap:true});}if(type==='generator'){world.machines.push({x:wx,y:wy-30,hp:3,destroyed:false});}if(type==='generatorRock'){world.generatorRock={x1:wx-260,x2:wx+260,top:wy};world.machines.push({x:wx,y:wy-30,hp:3,destroyed:false});}if(type==='barrier')world.barriers.push({x:wx-30,y:wy-60,w:60,h:60});if(type==='future')world.timeSigns.push({x:wx,y:wy,type:'future'});if(type==='past')world.timeSigns.push({x:wx,y:wy,type:'past'});if(type==='forest')window.editorForestStart=wx;for(const L of world.loops)prepareLoopTrack(L);editorRebuildCollision();saveEditorScene(editorEra);}
+function editorEraseObject(wx,wy){editorPush();let best=null,bd=90;for(const L of world.loops||[]){const d=Math.hypot(wx-L.cx,wy-L.cy);if(d<bd){best={type:'loop',obj:L};bd=d;}}if(world.bridge){const d=Math.hypot(wx-(world.bridge.x+world.bridge.w/2),wy-world.bridge.y);if(d<bd){best={type:'bridge'};bd=d;}}if(world.generatorRock){const cx=(world.generatorRock.x1+world.generatorRock.x2)/2,d=Math.hypot(wx-cx,wy-world.generatorRock.top);if(d<bd){best={type:'generator'};bd=d;}}for(const b of world.barriers||[]){const inside=wx>=b.x&&wx<=b.x+b.w&&wy>=b.y&&wy<=b.y+b.h;if(inside){best={type:'barrier',obj:b};bd=0;break;}}if(best){if(best.type==='loop')world.loops=world.loops.filter(x=>x!==best.obj);if(best.type==='bridge')world.bridge=null;if(best.type==='generator'){world.generatorRock=null;world.machines=[];}if(best.type==='barrier')world.barriers=world.barriers.filter(x=>x!==best.obj);editorRebuildCollision();saveEditorScene(editorEra);}}
+function editorMouseDown(e){if(!editorOpen)return;const r=canvas.getBoundingClientRect(),w=editorScreenToWorld(e.clientX-r.left,e.clientY-r.top);if(e.button===2){editorPanDrag={x:e.clientX,y:e.clientY,cameraX,cameraY};e.preventDefault();return;}if(editorMode==='move'){const n=editorNearestPoint(w.x,w.y);if(n.index>=0&&n.dist<65){editorPush();editorDragging={index:n.index};}}else if(editorMode==='signs'){const n=editorNearestSign(w.x,w.y);if(n.index>=0&&n.dist<90){if(e.shiftKey){editorPush();world.timeSigns.splice(n.index,1);saveEditorScene(editorEra);}else{editorPush();editorDragging={signIndex:n.index};}}}else if(editorMode==='add'||e.shiftKey){editorInsertPoint(w.x,w.y);}else if(editorMode==='delete'){editorDeletePoint(w.x,w.y);}else if(editorMode==='gap'){editorGapStart={x:w.x};}else if(editorMode==='object'){editorPlaceObject(w.x,w.y);}else if(editorMode==='eraseObject'){editorEraseObject(w.x,w.y);}e.preventDefault();}
+function editorMouseMove(e){if(!editorOpen)return;const r=canvas.getBoundingClientRect(),w=editorScreenToWorld(e.clientX-r.left,e.clientY-r.top);if(editorDragging){if(editorDragging.signIndex!=null)editorMoveSign(editorDragging.signIndex,w.x,w.y);else editorMovePoint(editorDragging.index,w.x,w.y);}if(editorPanDrag){cameraX=clamp(editorPanDrag.cameraX-(e.clientX-editorPanDrag.x),-200,Math.max(-200,world.width-W+250));cameraY=clamp(editorPanDrag.cameraY-(e.clientY-editorPanDrag.y),-200,600);}}
+function editorMouseUp(e){if(!editorOpen)return;if(editorMode==='gap'&&editorGapStart){const r=canvas.getBoundingClientRect(),w=editorScreenToWorld(e.clientX-r.left,e.clientY-r.top);editorSplitGap(editorGapStart.x,w.x);editorGapStart=null;}editorDragging=null;if(e.button===2)editorPanDrag=null;}
+canvas.addEventListener('mousedown',editorMouseDown);canvas.addEventListener('mousemove',editorMouseMove);canvas.addEventListener('mouseup',editorMouseUp);canvas.addEventListener('contextmenu',e=>{if(editorOpen)e.preventDefault();});
+canvas.addEventListener('wheel',e=>{if(!editorOpen)return;e.preventDefault();cameraX=clamp(cameraX+(e.deltaY||e.deltaX),-200,Math.max(-200,world.width-W+250));},{passive:false});
+editorUI.querySelectorAll('[data-mode]').forEach(b=>b.addEventListener('click',()=>editorSetMode(b.dataset.mode)));editorSectionEl.addEventListener('change',()=>editorSection=Number(editorSectionEl.value));editorUI.querySelectorAll('.era').forEach(b=>b.addEventListener('click',()=>editorSelectEra(b.dataset.era)));
+document.getElementById('editorUndo').addEventListener('click',()=>{if(editorHistory.length){const old=editorHistory.pop();editorRestoreSnapshot(old);}});
+document.getElementById('editorSave').addEventListener('click',()=>{saveEditorScene(editorEra);localStorage.setItem('sonicLevelEditorSaveV3',JSON.stringify(timelineEditorData));alert('All four era edits saved in this browser.');});
+document.getElementById('editorLoad').addEventListener('click',()=>{const v=localStorage.getItem('sonicLevelEditorSaveV3');if(v){editorPush();const d=JSON.parse(v);for(const k of EDITOR_ERAS)if(d[k])timelineEditorData[k]=d[k];applyEditorScene(editorEra);editorRefreshSections();alert('All four era edits loaded.');}else alert('No saved level found.');});
+document.getElementById('editorExport').addEventListener('click',()=>{saveEditorScene(editorEra);const blob=new Blob([JSON.stringify(timelineEditorData,null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='sonic-four-eras-level.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),500);});
+document.getElementById('editorPlay').addEventListener('click',()=>{saveEditorScene(editorEra);editorExit();reset();});document.getElementById('editorClose').addEventListener('click',editorExit);
+addEventListener('keydown',e=>{if(e.key.toLowerCase()==='e'&&!e.ctrlKey&&!e.metaKey){editorOpen?editorExit():editorEnter();e.preventDefault();}if(editorOpen&&editorFreeCam){const k=e.key.toLowerCase(),step=e.shiftKey?32:12;if(['arrowleft','a'].includes(k))cameraX-=step;if(['arrowright','d'].includes(k))cameraX+=step;if(['arrowup','w'].includes(k))cameraY-=step;if(['arrowdown','s'].includes(k))cameraY+=step;if(['home'].includes(k)){cameraX=0;cameraY=0;}cameraX=clamp(cameraX,-200,Math.max(-200,world.width-W+250));cameraY=clamp(cameraY,-200,600);}});
+function drawEditorOverlay(){if(!editorOpen)return;ctx.save();ctx.fillStyle='rgba(0,0,0,.12)';ctx.fillRect(0,0,W,H);const sections=getEditorSections();sections.forEach((pts,si)=>{if(!pts)return;ctx.strokeStyle=si===editorSection?'#ffe24a':'rgba(255,255,255,.55)';ctx.lineWidth=si===editorSection?4:2;ctx.beginPath();pts.forEach((q,i)=>{const x=sx(q.x),y=sy(q.y);if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);});ctx.stroke();pts.forEach((q,i)=>{const x=sx(q.x),y=sy(q.y);ctx.fillStyle=si===editorSection?'#ffdf36':'#fff';ctx.beginPath();ctx.arc(x,y,7,0,Math.PI*2);ctx.fill();ctx.strokeStyle='#111';ctx.lineWidth=2;ctx.stroke();ctx.fillStyle='#111';ctx.font='9px monospace';ctx.fillText(String(i),x+9,y-9);});});for(const g of world.waterGaps||[]){ctx.fillStyle='rgba(40,180,220,.25)';ctx.fillRect(sx(g.x),0,g.w,H);ctx.strokeStyle='#45d7ff';ctx.setLineDash([8,6]);ctx.strokeRect(sx(g.x),80,g.w,H-160);ctx.setLineDash([]);}for(const s of world.timeSigns||[]){const x=sx(s.x),y=sy(s.y);ctx.strokeStyle=s.type==='past'?'#e1a25a':'#70d7ff';ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(x,y+28);ctx.lineTo(x,y-30);ctx.stroke();ctx.fillStyle=s.type==='past'?'#7b442c':'#3a8db3';ctx.fillRect(x-34,y-42,68,24);ctx.fillStyle='#fff';ctx.font='bold 10px monospace';ctx.textAlign='center';ctx.fillText(s.type.toUpperCase(),x,y-26);ctx.textAlign='left';}for(const L of world.loops||[]){ctx.strokeStyle='#ff8cff';ctx.lineWidth=3;ctx.beginPath();ctx.arc(sx(L.cx),sy(L.cy),L.r,0,Math.PI*2);ctx.stroke();}if(world.bridge){ctx.strokeStyle='#66d9ff';ctx.lineWidth=4;ctx.strokeRect(sx(world.bridge.x),sy(world.bridge.y),world.bridge.w,world.bridge.h);}if(world.generatorRock){ctx.strokeStyle='#ff9d4d';ctx.lineWidth=4;ctx.strokeRect(sx(world.generatorRock.x1),sy(world.generatorRock.top),world.generatorRock.x2-world.generatorRock.x1,80);}for(const b of world.barriers||[]){ctx.fillStyle='rgba(220,80,80,.8)';ctx.fillRect(sx(b.x),sy(b.y),b.w,b.h);ctx.strokeStyle='#ffdfdf';ctx.lineWidth=2;ctx.strokeRect(sx(b.x),sy(b.y),b.w,b.h);ctx.fillStyle='#fff';ctx.font='bold 9px monospace';ctx.fillText('BARRIER',sx(b.x)+4,sy(b.y)+14);}ctx.fillStyle='#fff';ctx.font='bold 13px monospace';ctx.fillText('EDITOR: E close | Right-drag/WASD = FREE CAM | Shift+click = ADD POINT | Current ERA: '+editorEra.toUpperCase(),14,H-18);ctx.restore();}
+
+let last=performance.now();
+let runtimeError=null;
+function loop(now){
+  const dt=Math.min(Math.max((now-last)/1000,0),.033);last=now;time+=dt;
+  try{
+    if(!editorOpen) updatePlayer(dt);
+    updateCamera();
+    render();
+  }catch(err){
+    runtimeError=err;
+    console.error("Sonic engine runtime error:",err);
+    // Keep the animation loop alive while showing the actual error instead of
+    // leaving the canvas apparently frozen.
+    ctx.save();
+    ctx.setTransform(1,0,0,1,0,0);
+    ctx.fillStyle="rgba(0,0,0,.86)";ctx.fillRect(0,0,W,H);
+    ctx.fillStyle="#fff";ctx.font="bold 20px monospace";
+    ctx.fillText("ENGINE ERROR — PRESS R TO RESET",24,42);
+    ctx.font="14px monospace";
+    ctx.fillText(String(err && err.message ? err.message : err),24,72);
+    ctx.restore();
+  }
+  pressed.clear();
+  requestAnimationFrame(loop);
+}
+reset();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
