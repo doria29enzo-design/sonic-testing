@@ -38,9 +38,11 @@
     <span class="sep"></span>
     <button data-mode="move">MOVE POINTS</button><button data-mode="signs">EDIT SIGNS</button><button data-mode="add">ADD POINT</button><button data-mode="delete">DELETE POINT</button><button data-mode="gap">MAKE GAP</button><button data-mode="object">PLACE OBJECT</button><button data-mode="eraseObject">ERASE OBJECT</button>
     <select id="editorSection"><option value="0">TERRAIN 1</option><option value="1">TERRAIN 2</option></select>
-    <select id="editorObject"><option value="loop">Loop</option><option value="bridge">Bridge</option><option value="generator">Generator</option><option value="generatorRock">Generator + Rock</option><option value="barrier">Barrier Block</option><option value="future">Future Sign</option><option value="past">Past Sign</option><option value="forest">Forest Start</option></select>
+    <select id="editorObject"><option value="loop">Loop</option><option value="bridge">Bridge</option><option value="generator">Generator</option><option value="generatorRock">Generator + Rock</option><option value="barrier">Barrier Block</option><option value="future">Future Sign</option><option value="past">Past Sign</option><option value="forest">Forest Start</option><option value="ring">Ring</option><option value="rock">Rock</option><option value="tree">Tree</option><option value="crate">Crate</option><option value="spring">Spring</option><option value="bug">Flying Bug</option></select>
     <button id="editorUndo">UNDO</button><button id="editorSave">SAVE</button><button id="editorLoad">LOAD</button><button id="editorExport">EXPORT JSON</button><button id="editorPlay">PLAYTEST</button><button id="editorClose">CLOSE (E)</button>
   </div>
+  <div id="loopTools" style="margin-top:6px;background:rgba(8,12,18,.94);border:1px solid #9fb0c0;padding:6px;display:inline-flex;gap:7px;align-items:center;pointer-events:auto"><b>LOOP</b><label>SHAPE <select id="loopShape"><option value="circle">CIRCLE</option><option value="oval">OVAL</option></select></label><label>WIDTH <input id="loopW" type="number" min="80" max="600" step="10" value="270" style="width:65px"></label><label>HEIGHT <input id="loopH" type="number" min="80" max="600" step="10" value="270" style="width:65px"></label><button id="loopApply">APPLY TO NEAREST LOOP</button></div>
+  <div id="springTools" style="margin-top:6px;background:rgba(8,12,18,.94);border:1px solid #9fb0c0;padding:6px;display:inline-flex;gap:7px;align-items:center;pointer-events:auto"><b>SPRING</b><label>DIRECTION <select id="springDir"><option value="U">UP</option><option value="D">DOWN</option><option value="L">LEFT</option><option value="R">RIGHT</option></select></label><label>POWER <input id="springPower" type="number" min="5" max="40" value="20" style="width:55px"></label></div>
   <div id="editorHelp">Drag points to shape terrain. EDIT SIGNS lets you drag existing Past/Future signs; the selected era changes the preview palette and its saved scene. Right-drag / WASD / arrows = free camera. Mouse wheel = pan. Select an ERA to edit its own terrain, signs, objects, and visual palette. Bridges have collision. Barrier Blocks are solid obstacles. Shift+click = add point. E toggles editor.</div>
   <div id="musicPanel" style="margin-top:6px;background:rgba(8,12,18,.94);border:1px solid #9fb0c0;padding:6px;display:inline-flex;gap:7px;align-items:center;pointer-events:auto"><b>MUSIC</b><button id="musicToggle">MUSIC: ON</button><label>VOL <input id="musicVolume" type="range" min=0 max=1 step=.01 value=.35></label><span id="musicName">PRESENT</span></div>
 </div>
@@ -193,7 +195,8 @@ const world={
     {x:9020,y:455,type:"future"},
     {x:10030,y:455,type:"past"}
   ],
-  finishSign:{x:21450,y:445}
+  finishSign:{x:21450,y:445},
+  objects:[]
 };
 
 // Hand-authored route cuts: these replace repetitive flat ground with
@@ -243,7 +246,7 @@ function buildFujiLakeLevel(){
   // part of this build yet.
   world.width=23000; world.groundY=520;
   world.solids=[]; world.slopes=[]; world.loops=[]; world.springs=[];
-  world.rings=[]; world.homingTargets=[]; world.timeSigns=[]; world.waterGaps=[]; world.barriers=[];
+  world.rings=[]; world.homingTargets=[]; world.timeSigns=[]; world.waterGaps=[]; world.barriers=[]; world.objects=[]; world.enemies=[];
 
   const flat=(x1,x2,y)=>world.solids.push({x:x1,y,w:x2-x1,h:1020-y});
   const slope=(x1,y1,x2,y2)=>world.slopes.push({x1,y1,x2,y2});
@@ -462,20 +465,21 @@ window.__editorSections=[window.__conceptTerrain1,window.__conceptTerrain2];
 // Each era gets its own editable scene. PRESENT starts from the original level;
 // the other eras begin as copies so the user can diverge them independently.
 const EDITOR_ERAS=['past','present','badFuture','goodFuture'];
-function cloneSceneFromCurrent(){return {sections:clonePoints(window.__editorSections||[]),waterGaps:(world.waterGaps||[]).map(g=>({...g})),loops:(world.loops||[]).map(l=>({...l})),bridge:world.bridge?({...world.bridge}):null,barriers:(world.barriers||[]).map(b=>({...b})),machines:(world.machines||[]).map(m=>({...m})),generatorRock:world.generatorRock?({...world.generatorRock}):null,timeSigns:(world.timeSigns||[]).map(x=>({...x})),forestStart:window.editorForestStart??23200};}
+function cloneSceneFromCurrent(){return {sections:clonePoints(window.__editorSections||[]),waterGaps:(world.waterGaps||[]).map(g=>({...g})),loops:(world.loops||[]).map(l=>({...l})),bridge:world.bridge?({...world.bridge}):null,barriers:(world.barriers||[]).map(b=>({...b})),machines:(world.machines||[]).map(m=>({...m})),generatorRock:world.generatorRock?({...world.generatorRock}):null,timeSigns:(world.timeSigns||[]).map(x=>({...x})),rings:(world.rings||[]).map(r=>({...r})),objects:(world.objects||[]).map(o=>({...o})),springs:(world.springs||[]).map(x=>({...x})),enemies:(world.enemies||[]).map(e=>({...e})),forestStart:window.editorForestStart??18400};}
 function clonePoints(sections){return (sections||[]).map(a=>(a||[]).map(q=>({x:q.x,y:q.y})));}
 const __baseEditorScene=cloneSceneFromCurrent();
 const timelineEditorData={past:structuredClone(__baseEditorScene),present:structuredClone(__baseEditorScene),badFuture:structuredClone(__baseEditorScene),goodFuture:structuredClone(__baseEditorScene)};
-function editorEraKeyForGame(){if(timeline==='past')return 'past';if(timeline==='future')return world.machines.length>0&&world.machines.every(m=>m.destroyed)?'goodFuture':'badFuture';return 'present';}
-function applyEditorScene(key){const d=timelineEditorData[key]||timelineEditorData.present;window.__editorSections=clonePoints(d.sections);window.__conceptTerrain1=window.__editorSections[0]||[];window.__conceptTerrain2=window.__editorSections[1]||[];world.waterGaps=(d.waterGaps||[]).map(g=>({...g}));world.loops=(d.loops||[]).map(l=>({...l}));world.bridge=d.bridge?({...d.bridge}):null;world.barriers=(d.barriers||[]).map(b=>({...b}));world.machines=(d.machines||[]).map(m=>({...m}));world.generatorRock=d.generatorRock?({...d.generatorRock}):null;world.timeSigns=(d.timeSigns||[]).map(x=>({...x}));window.editorForestStart=d.forestStart??23200;editorRebuildCollisionRaw();syncTimeCoreState();}
-function syncTimeCoreState(){if(!timeCoreDestroyed)return;for(const m of world.machines){m.hp=0;m.destroyed=true;}}
-function saveEditorScene(key){timelineEditorData[key]={sections:clonePoints(window.__editorSections),waterGaps:(world.waterGaps||[]).map(g=>({...g})),loops:(world.loops||[]).map(l=>({...l})),bridge:world.bridge?({...world.bridge}):null,barriers:(world.barriers||[]).map(b=>({...b})),machines:(world.machines||[]).map(m=>({...m})),generatorRock:world.generatorRock?({...world.generatorRock}):null,timeSigns:(world.timeSigns||[]).map(x=>({...x})),forestStart:window.editorForestStart??23200};}
+function editorEraKeyForGame(){if(timeline==='past')return 'past';if(timeline==='future')return timeCoreDestroyed?'goodFuture':'badFuture';return 'present';}
+function applyEditorScene(key){const d=timelineEditorData[key]||timelineEditorData.present;window.__editorSections=clonePoints(d.sections);window.__conceptTerrain1=window.__editorSections[0]||[];window.__conceptTerrain2=window.__editorSections[1]||[];world.waterGaps=(d.waterGaps||[]).map(g=>({...g}));world.loops=(d.loops||[]).map(l=>({...l}));world.bridge=d.bridge?({...d.bridge}):null;world.barriers=(d.barriers||[]).map(b=>({...b}));world.machines=(d.machines||[]).map(m=>({...m}));world.generatorRock=d.generatorRock?({...d.generatorRock}):null;world.timeSigns=(d.timeSigns||[]).map(x=>({...x}));world.rings=(d.rings||[]).map(r=>({...r}));world.objects=(d.objects||[]).map(o=>({...o}));world.springs=(d.springs||[]).map(x=>({...x}));world.enemies=(d.enemies||[]).map(e=>({...e}));window.editorForestStart=d.forestStart??18400;editorRebuildCollisionRaw();syncTimeCoreState();}
+function syncTimeCoreState(){if(!timeCoreDestroyed)return;for(const m of world.machines){m.hp=0;m.destroyed=true;} if(typeof timelineEditorData!=='undefined'){for(const key of EDITOR_ERAS||[]){const scene=timelineEditorData[key];if(scene&&scene.machines){for(const m of scene.machines){m.hp=0;m.destroyed=true;}}}}}
+function saveEditorScene(key){timelineEditorData[key]={sections:clonePoints(window.__editorSections),waterGaps:(world.waterGaps||[]).map(g=>({...g})),loops:(world.loops||[]).map(l=>({...l})),bridge:world.bridge?({...world.bridge}):null,barriers:(world.barriers||[]).map(b=>({...b})),machines:(world.machines||[]).map(m=>({...m})),generatorRock:world.generatorRock?({...world.generatorRock}):null,timeSigns:(world.timeSigns||[]).map(x=>({...x})),rings:(world.rings||[]).map(r=>({...r})),objects:(world.objects||[]).map(o=>({...o})),springs:(world.springs||[]).map(x=>({...x})),enemies:(world.enemies||[]).map(e=>({...e})),forestStart:window.editorForestStart??18400};}
 function editorRebuildCollisionRaw(){world.solids=[];world.slopes=[];for(const pts of getEditorSections()){if(!pts||pts.length<2)continue;for(let i=0;i<pts.length-1;i++){const a=pts[i],b=pts[i+1];if(Math.abs(a.y-b.y)<.01)world.solids.push({x:a.x,y:a.y,w:b.x-a.x,h:1020-a.y});else world.slopes.push({x1:a.x,y1:a.y,x2:b.x,y2:b.y});}}
   // Bridges are real collision surfaces, not just visual rectangles.
   if(world.bridge) world.solids.push({x:world.bridge.x,y:world.bridge.y,w:world.bridge.w,h:world.bridge.h});
-  // Barrier blocks are solid rectangular obstacles.
-  for(const b of world.barriers||[]) world.solids.push({x:b.x,y:b.y,w:b.w,h:b.h});
-  world.baseSolids=world.solids.slice();world.baseSlopes=world.slopes.slice();for(const L of world.loops||[])prepareLoopTrack(L);}
+  // Barrier Blocks are upright obstacles, not floor platforms.
+  world.barrierSolids=(world.barriers||[]).map(b=>({x:b.x,y:b.y,w:b.w,h:b.h}));
+  for(const o of world.objects||[]) if(o.type==='crate') world.solids.push({x:o.x-o.w/2,y:o.y-o.h,w:o.w,h:o.h});
+  world.barrierSolids=(world.barriers||[]).map(b=>({x:b.x,y:b.y,w:b.w,h:b.h}));world.baseSolids=world.solids.slice();world.baseSlopes=world.slopes.slice();for(const L of world.loops||[])prepareLoopTrack(L);}
 // Timeline-specific route changes. The four eras share the same broad location,
 // but a few bridges/shortcuts shift so exploring time is mechanically meaningful.
 world.baseSolids=world.solids.slice();
@@ -550,7 +554,6 @@ let timeline="present";
 // Playthrough state: destroying the Past time core must persist while moving
 // between Past, Present, and Future. It resets only when the player presses R.
 let timeCoreDestroyed=false;
-applyTimelineLayout();
 let timeWarpSign=null;
 let timeWarpTimer=0;
 let timeWarpFlash=0;
@@ -590,6 +593,7 @@ function reset(){
   cameraX=0;cameraY=0;shake=0;
   timeline="present";
   timeCoreDestroyed=false;
+  if(typeof timelineEditorData!=='undefined'){for(const key of EDITOR_ERAS||[]){const scene=timelineEditorData[key];if(scene&&scene.machines){for(const m of scene.machines){m.hp=3;m.destroyed=false;}}}}
   musicStopCurrent();
   musicPendingKey=null;
   musicEra='present';
@@ -633,9 +637,10 @@ function nearestLoop(){
   for(let i=0;i<world.loops.length;i++){
     const L=world.loops[i];
     const dx=p.x-L.cx,dy=(p.y+20)-L.cy;
-    const d=Math.hypot(dx,dy);
+    const rx=L.rx||L.r||135, ry=L.ry||L.r||135;
+    const norm=Math.sqrt((dx*dx)/(rx*rx)+(dy*dy)/(ry*ry));
     // Only attach when near the loop's track and moving sufficiently.
-    if(Math.abs(d-L.r)<38 && Math.abs(p.vx)>4 && p.y<570)
+    if(Math.abs(norm-1)<0.28 && Math.abs(p.vx)>4 && p.y<700)
       return {i,L,theta:Math.atan2(dy,dx)};
   }
   return null;
@@ -659,9 +664,10 @@ function prepareLoopTrack(L){
   // From the RIGHT: the exact same tube works in reverse.
   const makePath=(fromLeft)=>{
     const pts=[];
-    const entry={x:L.cx+(fromLeft?-L.r-150:L.r+150),y:L.cy+L.r};
-    const wall={x:L.cx+(fromLeft?L.r:-L.r),y:L.cy};
-    const exit={x:L.cx+(fromLeft?L.r+150:-L.r-150),y:L.cy+L.r};
+    const rx=L.rx||L.r||135, ry=L.ry||L.r||135;
+    const entry={x:L.cx+(fromLeft?-rx-150:rx+150),y:L.cy+ry};
+    const wall={x:L.cx+(fromLeft?rx:-rx),y:L.cy};
+    const exit={x:L.cx+(fromLeft?rx+150:-rx-150),y:L.cy+ry};
     const steps=36;
 
     // Straight bottom approach through the open tube.
@@ -675,7 +681,7 @@ function prepareLoopTrack(L){
     for(let i=1;i<=arcSteps;i++){
       const q=i/arcSteps;
       const theta=fromLeft ? -(Math.PI*1.5)*q : Math.PI+(Math.PI*1.5)*q;
-      pts.push({x:L.cx+Math.cos(theta)*L.r,y:L.cy+Math.sin(theta)*L.r});
+      pts.push({x:L.cx+Math.cos(theta)*rx,y:L.cy+Math.sin(theta)*ry});
     }
 
     // Straight bottom exit toward the opposite side.
@@ -902,6 +908,21 @@ function updateSonicTrail(dt){
   }else trailTimer=0;
 }
 
+function resolveBarrierCollision(prevX,nextX,prevY,nextY){
+  if(nextX===prevX) return;
+  const halfW=p.w/2,halfH=p.h/2;
+  const prevTop=prevY-halfH,prevBottom=prevY+halfH;
+  const nextTop=nextY-halfH,nextBottom=nextY+halfH;
+  for(const sp of world.springs||[]){ctx.strokeStyle='#ff4b4b';ctx.lineWidth=3;ctx.strokeRect(sx(sp.x-18),sy(sp.y-10),36,20);ctx.fillStyle='#fff';ctx.font='bold 10px monospace';ctx.fillText(sp.dir||'U',sx(sp.x-3),sy(sp.y+4));}
+  for(const e of world.enemies||[]){ctx.strokeStyle='#ff8d5c';ctx.beginPath();ctx.arc(sx(e.x),sy(e.y),18,0,Math.PI*2);ctx.stroke();}
+  for(const b of world.barriers||[]){
+    const overlap=Math.max(prevTop,nextTop)<b.y+b.h && Math.min(prevBottom,nextBottom)>b.y;
+    if(!overlap) continue;
+    if(nextX>prevX && prevX+halfW<=b.x+2 && nextX+halfW>=b.x){p.x=b.x-halfW;p.vx=0;return;}
+    if(nextX<prevX && prevX-halfW>=b.x+b.w-2 && nextX-halfW<=b.x+b.w){p.x=b.x+b.w+halfW;p.vx=0;return;}
+  }
+}
+
 function resolveRaisedTerrainCollision(prevX,nextX){
   if(nextX===prevX) return;
   const movingRight=nextX>prevX,movingLeft=nextX<prevX;
@@ -913,7 +934,8 @@ function resolveRaisedTerrainCollision(prevX,nextX){
 
   // Swept side collision. Use both the old and predicted Y positions so a fast
   // Sonic cannot walk through the vertical face of a raised block.
-  for(const s of world.solids){
+  const sideSolids=[...(world.solids||[]),...(world.barrierSolids||[])];
+  for(const s of sideSolids){
     if(s.y>=700) continue;
     const overlap=Math.max(prevTop,nextTop)<s.y+s.h && Math.min(prevBottom,nextBottom)>s.y;
     if(!overlap) continue;
@@ -1078,6 +1100,8 @@ function updatePlayer(dt){
   const nextPlayerY=p.y+p.vy;
   p.x=nextPlayerX;
   p.y=nextPlayerY;
+  // Invisible Barrier Blocks are true side walls, never standable platforms.
+  resolveBarrierCollision(prevPlayerX,p.x,prevPlayerY,p.y);
 
   // Homing dash steering: while the attack is active, continuously steer toward
   // the locked target instead of firing a one-frame projectile and hoping the
@@ -1146,17 +1170,36 @@ function updatePlayer(dt){
         if(m.hp<=0){
           m.destroyed=true;
           timeCoreDestroyed=true;
+          syncTimeCoreState();
           spawnParticles(m.x,m.y,40);
         }
       }
     }
   }
 
-  // Springs.
+  // Flying robot bugs drift vertically and patrol around their placed point.
+  for(const e of world.enemies||[]){
+    if(e.dead) continue;
+    e.phase=(e.phase||0)+dt*2.2;
+    e.x += Math.sin(e.phase*.7)*(e.speed||1.1);
+    e.y = (e.baseY||e.y) + Math.sin(e.phase)*(e.range||90);
+    const d=Math.hypot(p.x-e.x,(p.y+20)-e.y);
+    if(d<34){
+      if(p.invuln<=0){ if(p.rings>0)p.rings=0; else respawn(); p.invuln=1.2; shake=8; }
+    }
+  }
+
+  // Springs: each can launch Up, Down, Left, or Right.
   for(const s of world.springs){
-    if(Math.abs(p.x-s.x)<28 && p.y+24>=s.y-10 && p.y+24<=s.y+18 && p.vy>=0){
-      p.y=s.y-45;p.vy=-s.power;p.grounded=false;p.jumping=true;
-      spawnParticles(s.x,s.y,14);shake=5;
+    const dir=s.dir||'U';
+    const hit=Math.abs(p.x-s.x)<30 && Math.abs((p.y+20)-s.y)<30;
+    if(hit){
+      const power=s.power||20;
+      if(dir==='U'){p.y=s.y-45;p.vy=-power;}
+      else if(dir==='D'){p.y=s.y+25;p.vy=power;}
+      else if(dir==='L'){p.x=s.x-35;p.vx=-power;}
+      else {p.x=s.x+35;p.vx=power;}
+      p.grounded=false;p.jumping=true;spawnParticles(s.x,s.y,14);shake=5;
     }
   }
 
@@ -1239,9 +1282,9 @@ function drawBackground(){
   // Act 2 deep-forest canopy. The foliage is attached to the TOP edge of the
   // screen, like towering Japanese cypress trees surrounding the road. It is
   // deliberately drawn behind the level so it never blocks Sonic's route.
-  const forestStart=18400;
-  if(p.x>=forestStart) forestSeen=true;
-  const forestOn=forestSeen;
+  const forestStart=window.editorForestStart??18400;
+  const forestEnd=21800;
+  const forestOn=p.x>=forestStart && p.x<=forestEnd;
   if(forestOn){
     ctx.globalAlpha=1;
     let trunk='#4b382b', leaf='#294c2f';
@@ -1269,6 +1312,9 @@ function drawBackground(){
     }
     ctx.restore();
   }
+
+  // User-placed Tree objects are foreground objects. The built-in forest canopy above
+  // remains behind Mount Fuji; placed Tree objects are drawn later in the foreground.
 
   // Mount Fuji stays centered in the composition because Sonic is traveling around the lake.
   // It is opaque, with crisp snow and ridges instead of the old translucent repeated copies.
@@ -1321,6 +1367,13 @@ function sx(x){return x-cameraX;}
 function sy(y){return y-cameraY;}
 
 function drawForeground(){
+  // User-placed trees are true foreground scenery and are drawn in front of Fuji/world.
+  for(const o of world.objects||[]){
+    if(o.type!=='tree') continue;
+    const x=sx(o.x),y=sy(o.y),sc=o.scale||1;
+    drawTree(x,y,sc,'#285b35','#4a3527');
+    ctx.fillStyle='#234c2f';ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x-24*sc,y-115*sc);ctx.lineTo(x-9*sc,y-145*sc);ctx.lineTo(x+4*sc,y-175*sc);ctx.lineTo(x+19*sc,y-140*sc);ctx.lineTo(x+28*sc,y-105*sc);ctx.closePath();ctx.fill();
+  }
   const good=visualGoodFuture();
   const showGoodForeground=(timeline==='future'&&good)||(timeline==='present'&&good);
   const bad=timeline==='future'&&!good;
@@ -1335,26 +1388,7 @@ function drawForeground(){
     ctx.globalAlpha=1;
 
     if(inForest){
-      // Act 2 forest: the giant trees belong to the BACKGROUND.
-      // Keep the playable road completely clear; only narrow trunks sit at the
-      // far edges of the route, while the canopy is drawn at the top of the screen.
-      const forestSide = x < 145 || x > W-145;
-      if(forestSide){
-        const scale=1.15+(type%3)*.12;
-        let trunk,leaf;
-        if(bad){ trunk='#29302d'; leaf=type%2?'#303a35':'#39443f'; }
-        else if(timeline==='past'){ trunk='#5b4432'; leaf=type%2?'#385737':'#45663f'; }
-        else if(showGoodForeground){ trunk='#466044'; leaf=type%2?'#2f824b':'#3f9b58'; }
-        else { trunk='#4c513d'; leaf=type%2?'#3f7042':'#4d7e49'; }
-        ctx.globalAlpha=1;
-        ctx.fillStyle=trunk;
-        ctx.fillRect(x-5*scale,H*.32,10*scale,H*.72);
-        ctx.fillStyle=leaf;
-        // Small side foliage only; the huge canopy is rendered behind everything.
-        for(let j=0;j<3;j++){
-          ctx.beginPath();ctx.arc(x+(j-1)*20*scale,H*.18+j*34,42*scale,0,Math.PI*2);ctx.fill();
-        }
-      }
+      // Built-in forest canopy is handled by drawBackground().
       continue;
     }
 
@@ -1419,6 +1453,15 @@ function drawTitleCard(){
   ctx.font='bold '+Math.max(9,Math.min(13,W*.014))+'px monospace';
   ctx.strokeText('LAKE FUJI',tx+4,H*.81);ctx.fillText('LAKE FUJI',tx+4,H*.81);
   ctx.restore();
+  // User-placed Tree objects are foreground trees. They render after the ground,
+  // so they can appear in front of Mount Fuji and in front of the route.
+  for(const o of world.objects||[]){
+    if(o.type!=='tree') continue;
+    const x=o.x-cameraX*.96, y=o.y-cameraY, sc=o.scale||1;
+    if(x<-220||x>W+220) continue;
+    drawTree(x,y,1.8*sc,'#294c2f','#4b382b');
+  }
+
 }
 
 function drawWorld(){
@@ -1464,6 +1507,8 @@ function drawWorld(){
     ctx.fillRect(sx(s.x),sy(s.y),s.w,12);
     ctx.fillStyle=groundMain;
   }
+  // Barrier Blocks are invisible gameplay walls; they are shown only in the editor.
+
   // checker-like dirt
   ctx.fillStyle="rgba(100,70,40,.22)";
   for(const s of world.solids){
@@ -1508,14 +1553,14 @@ function drawWorld(){
     drawPath(partial,10,"#8cdb62");
   }
 
-  // springs
+  // Springs
   for(const s of world.springs){
-    ctx.fillStyle="#e33";ctx.fillRect(sx(s.x-15),sy(s.y-10),30,10);
-    ctx.strokeStyle="#fff";ctx.lineWidth=3;
-    for(let i=0;i<3;i++){
-      ctx.beginPath();ctx.moveTo(sx(s.x-12+i*8),sy(s.y-10));
-      ctx.lineTo(sx(s.x-8+i*8),sy(s.y-22));ctx.stroke();
-    }
+    const dir=s.dir||'U', ang=dir==='U'?0:dir==='D'?Math.PI:dir==='L'?-Math.PI/2:Math.PI/2;
+    ctx.save();ctx.translate(sx(s.x),sy(s.y));ctx.rotate(ang);
+    ctx.fillStyle='#e33';ctx.fillRect(-15,-5,30,10);
+    ctx.strokeStyle='#fff';ctx.lineWidth=3;
+    for(let i=0;i<3;i++){ctx.beginPath();ctx.moveTo(-12+i*8,-5);ctx.lineTo(-8+i*8,-17);ctx.stroke();}
+    ctx.restore();
   }
 
   // rings
@@ -1554,6 +1599,29 @@ function drawWorld(){
       for(let i=0;i<m.hp;i++){ctx.fillStyle="#ffdf55";ctx.fillRect(-18+i*12,27,8,5);}
       ctx.restore();
     }
+  }
+
+  // Editor objects. Rings are collectible; rocks/trees are visual; crates are
+  // solid because their collision is rebuilt into world.solids.
+  for(const o of world.objects||[]){
+    const x=sx(o.x), y=sy(o.y), sc=o.scale||1;
+    if(o.type==='rock'){
+      ctx.fillStyle=visualEraKind()==='past'?'#6e6257':visualEraKind()==='future'?'#46575a':'#59675d';
+      ctx.beginPath();ctx.moveTo(x-34*sc,y);ctx.lineTo(x-20*sc,y-28*sc);ctx.lineTo(x+2*sc,y-42*sc);ctx.lineTo(x+31*sc,y-22*sc);ctx.lineTo(x+38*sc,y);ctx.closePath();ctx.fill();
+    }else if(o.type==='crate'){
+      ctx.fillStyle='#a96f3d';ctx.fillRect(x-o.w/2,y-o.h,o.w,o.h);
+      ctx.strokeStyle='#6d4326';ctx.lineWidth=5;ctx.strokeRect(x-o.w/2,y-o.h,o.w,o.h);
+      ctx.beginPath();ctx.moveTo(x-o.w/2+6,y-o.h+6);ctx.lineTo(x+o.w/2-6,y-6);ctx.moveTo(x+o.w/2-6,y-o.h+6);ctx.lineTo(x-o.w/2+6,y-6);ctx.stroke();
+    }
+  }
+
+  // Flying robot bug enemies.
+  for(const e of world.enemies||[]){
+    if(e.dead||e.type!=='bug') continue;
+    const x=sx(e.x),y=sy(e.y);ctx.save();ctx.translate(x,y);
+    ctx.fillStyle='#555c68';ctx.fillRect(-14,-8,28,16);ctx.fillStyle='#e44';ctx.beginPath();ctx.arc(0,0,6,0,Math.PI*2);ctx.fill();
+    ctx.strokeStyle='#9da7b4';ctx.lineWidth=4;ctx.beginPath();ctx.ellipse(-18,-7,15,7,-.35,0,Math.PI*2);ctx.ellipse(18,-7,15,7,.35,0,Math.PI*2);ctx.stroke();
+    ctx.strokeStyle='#222';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(-7,-8);ctx.lineTo(-13,-18);ctx.moveTo(7,-8);ctx.lineTo(13,-18);ctx.stroke();ctx.restore();
   }
 
   // Sonic CD-style time warp signs
@@ -1754,12 +1822,14 @@ function render(){
 let editorOpen=false,editorMode='move',editorSection=0,editorDragging=null,editorGapStart=null,editorHistory=[],editorEra='present',editorFreeCam=true,editorPanDrag=null;
 const editorUI=document.getElementById('editorUI');
 const editorSectionEl=document.getElementById('editorSection');
-const editorObjectEl=document.getElementById('editorObject');
+const editorObjectEl=document.getElementById('editorObject');const loopShapeEl=document.getElementById('loopShape'),loopWEl=document.getElementById('loopW'),loopHEl=document.getElementById('loopH');
+const springDirEl=document.getElementById('springDir'),springPowerEl=document.getElementById('springPower');
+
 function getEditorSections(){return window.__editorSections||[window.__conceptTerrain1||[],window.__conceptTerrain2||[]];}
 function cloneEditorSections(){return getEditorSections().map(a=>a.map(p=>({x:p.x,y:p.y})));}
-function editorSnapshot(){return JSON.stringify({era:editorEra,sections:cloneEditorSections(),waterGaps:(world.waterGaps||[]).map(g=>({...g})),loops:(world.loops||[]).map(l=>({...l})),bridge:world.bridge?({...world.bridge}):null,barriers:(world.barriers||[]).map(b=>({...b})),machines:(world.machines||[]).map(m=>({...m})),generatorRock:world.generatorRock?({...world.generatorRock}):null,timeSigns:(world.timeSigns||[]).map(x=>({...x})),forestStart:window.editorForestStart??23200,freeCam:editorFreeCam});}
+function editorSnapshot(){return JSON.stringify({era:editorEra,sections:cloneEditorSections(),waterGaps:(world.waterGaps||[]).map(g=>({...g})),loops:(world.loops||[]).map(l=>({...l})),bridge:world.bridge?({...world.bridge}):null,barriers:(world.barriers||[]).map(b=>({...b})),machines:(world.machines||[]).map(m=>({...m})),generatorRock:world.generatorRock?({...world.generatorRock}):null,timeSigns:(world.timeSigns||[]).map(x=>({...x})),rings:(world.rings||[]).map(r=>({...r})),objects:(world.objects||[]).map(o=>({...o})),springs:(world.springs||[]).map(x=>({...x})),enemies:(world.enemies||[]).map(e=>({...e})),forestStart:window.editorForestStart??18400,freeCam:editorFreeCam});}
 function editorPush(){editorHistory.push(editorSnapshot());if(editorHistory.length>60)editorHistory.shift();}
-function editorRestoreSnapshot(str){const d=JSON.parse(str);window.__editorSections=d.sections||[];window.__conceptTerrain1=window.__editorSections[0]||[];window.__conceptTerrain2=window.__editorSections[1]||[];world.waterGaps=d.waterGaps||[];world.loops=d.loops||[];world.bridge=d.bridge||null;world.barriers=d.barriers||[];world.machines=d.machines||[];world.generatorRock=d.generatorRock||null;world.timeSigns=d.timeSigns||world.timeSigns||[];window.editorForestStart=d.forestStart??23200;editorRebuildCollision();saveEditorScene(editorEra);}
+function editorRestoreSnapshot(str){const d=JSON.parse(str);window.__editorSections=d.sections||[];window.__conceptTerrain1=window.__editorSections[0]||[];window.__conceptTerrain2=window.__editorSections[1]||[];world.waterGaps=d.waterGaps||[];world.loops=d.loops||[];world.bridge=d.bridge||null;world.barriers=d.barriers||[];world.machines=d.machines||[];world.generatorRock=d.generatorRock||null;world.timeSigns=d.timeSigns||world.timeSigns||[];world.rings=d.rings||[];world.objects=d.objects||[];world.springs=d.springs||world.springs||[];world.enemies=d.enemies||[];window.editorForestStart=d.forestStart??18400;editorRebuildCollision();saveEditorScene(editorEra);}
 function editorRebuildCollision(){editorRebuildCollisionRaw();}
 function editorRefreshSections(){editorSectionEl.innerHTML='';getEditorSections().forEach((_,i)=>{const o=document.createElement('option');o.value=i;o.textContent='TERRAIN '+(i+1);editorSectionEl.appendChild(o);});editorSection=Math.min(editorSection,getEditorSections().length-1);editorSectionEl.value=String(editorSection);}
 function editorRefreshEraButtons(){editorUI.querySelectorAll('.era').forEach(b=>b.classList.toggle('active',b.dataset.era===editorEra));}
@@ -1776,8 +1846,15 @@ function editorMovePoint(i,wx,wy){const pts=editorSection===0?window.__conceptTe
 function editorNearestSign(wx,wy){let best=-1,bd=Infinity;for(let i=0;i<(world.timeSigns||[]).length;i++){const q=world.timeSigns[i],d=Math.hypot(q.x-wx,q.y-wy);if(d<bd){bd=d;best=i;}}return{index:best,dist:bd};}
 function editorMoveSign(i,wx,wy){const a=world.timeSigns;if(!a||i<0||i>=a.length)return;a[i].x=wx;a[i].y=Math.max(300,Math.min(650,wy));saveEditorScene(editorEra);}
 function editorSplitGap(x1,x2){if(x2<x1)[x1,x2]=[x2,x1];const pts=editorSection===0?window.__conceptTerrain1:window.__conceptTerrain2;if(!pts||pts.length<2||x2-x1<20)return;editorPush();const interp=x=>{for(let i=0;i<pts.length-1;i++){const a=pts[i],b=pts[i+1];if(x>=a.x&&x<=b.x){const t=(x-a.x)/(b.x-a.x||1);return{x,y:a.y+(b.y-a.y)*t};}}return null;};const left=[...pts.filter(p=>p.x<x1),interp(x1)].filter(Boolean);const right=[interp(x2),...pts.filter(p=>p.x>x2)].filter(Boolean);const sections=getEditorSections();sections[editorSection]=left;sections.splice(editorSection+1,0,right);window.__editorSections=sections;window.__conceptTerrain1=sections[0]||[];window.__conceptTerrain2=sections[1]||[];world.waterGaps.push({x:x1,w:x2-x1,top:560,editorGap:true});editorRebuildCollision();editorRefreshSections();saveEditorScene(editorEra);}
-function editorPlaceObject(wx,wy){editorPush();const type=editorObjectEl.value;if(type==='loop')world.loops.push({cx:wx,cy:wy,r:70});if(type==='bridge'){world.bridge={x:wx-120,y:wy,w:240,h:28};world.waterGaps.push({x:wx-120,w:240,top:wy+55,small:true,editorGap:true});}if(type==='generator'){world.machines.push({x:wx,y:wy-30,hp:3,destroyed:false});}if(type==='generatorRock'){world.generatorRock={x1:wx-260,x2:wx+260,top:wy};world.machines.push({x:wx,y:wy-30,hp:3,destroyed:false});}if(type==='barrier')world.barriers.push({x:wx-30,y:wy-60,w:60,h:60});if(type==='future')world.timeSigns.push({x:wx,y:wy,type:'future'});if(type==='past')world.timeSigns.push({x:wx,y:wy,type:'past'});if(type==='forest')window.editorForestStart=wx;for(const L of world.loops)prepareLoopTrack(L);editorRebuildCollision();saveEditorScene(editorEra);}
-function editorEraseObject(wx,wy){editorPush();let best=null,bd=90;for(const L of world.loops||[]){const d=Math.hypot(wx-L.cx,wy-L.cy);if(d<bd){best={type:'loop',obj:L};bd=d;}}if(world.bridge){const d=Math.hypot(wx-(world.bridge.x+world.bridge.w/2),wy-world.bridge.y);if(d<bd){best={type:'bridge'};bd=d;}}if(world.generatorRock){const cx=(world.generatorRock.x1+world.generatorRock.x2)/2,d=Math.hypot(wx-cx,wy-world.generatorRock.top);if(d<bd){best={type:'generator'};bd=d;}}for(const b of world.barriers||[]){const inside=wx>=b.x&&wx<=b.x+b.w&&wy>=b.y&&wy<=b.y+b.h;if(inside){best={type:'barrier',obj:b};bd=0;break;}}if(best){if(best.type==='loop')world.loops=world.loops.filter(x=>x!==best.obj);if(best.type==='bridge')world.bridge=null;if(best.type==='generator'){world.generatorRock=null;world.machines=[];}if(best.type==='barrier')world.barriers=world.barriers.filter(x=>x!==best.obj);editorRebuildCollision();saveEditorScene(editorEra);}}
+document.getElementById('loopApply').addEventListener('click',()=>{
+  let best=null,bd=Infinity;
+  const cx=cameraX+W/2,cy=cameraY+H/2;
+  for(const L of world.loops||[]){const d=Math.hypot(L.cx-cx,L.cy-cy);if(d<bd){bd=d;best=L;}}
+  if(!best)return;editorPush();const w=Math.max(80,Number(loopWEl.value)||270),h=Math.max(80,Number(loopHEl.value)||270);best.shape=loopShapeEl.value;best.rx=w/2;best.ry=h/2;best.r=Math.min(best.rx,best.ry);delete best.trackBoth;prepareLoopTrack(best);saveEditorScene(editorEra);
+});
+
+function editorPlaceObject(wx,wy){editorPush();const type=editorObjectEl.value;if(type==='loop'){const shape=document.getElementById('loopShape').value;const w=Math.max(80,Number(document.getElementById('loopW').value)||270);const h=Math.max(80,Number(document.getElementById('loopH').value)||270);world.loops.push({cx:wx,cy:wy,r:Math.min(w,h)/2,rx:w/2,ry:h/2,shape});}if(type==='bridge'){world.waterGaps=(world.waterGaps||[]).filter(g=>!g.editorGap||!g.small);world.bridge={x:wx-120,y:wy,w:240,h:28};world.waterGaps.push({x:wx-120,w:240,top:wy+55,small:true,editorGap:true});}if(type==='generator'){world.machines.push({x:wx,y:wy-30,hp:3,destroyed:false});}if(type==='generatorRock'){world.generatorRock={x1:wx-260,x2:wx+260,top:wy};world.machines.push({x:wx,y:wy-30,hp:3,destroyed:false});}if(type==='barrier')world.barriers.push({x:wx-30,y:wy-60,w:60,h:60});if(type==='future')world.timeSigns.push({x:wx,y:wy,type:'future'});if(type==='past')world.timeSigns.push({x:wx,y:wy,type:'past'});if(type==='forest')window.editorForestStart=wx;if(type==='ring')world.rings.push({x:wx,y:wy});if(type==='rock')world.objects.push({type:'rock',x:wx,y:wy,scale:1});if(type==='tree')world.objects.push({type:'tree',x:wx,y:wy,scale:1});if(type==='crate')world.objects.push({type:'crate',x:wx,y:wy,w:54,h:54});if(type==='spring')world.springs.push({x:wx,y:wy,power:Math.max(5,Number(document.getElementById('springPower').value)||20),dir:document.getElementById('springDir').value});if(type==='bug')world.enemies.push({type:'bug',x:wx,y:wy,baseY:wy,phase:Math.random()*Math.PI*2,range:90,speed:1.1,hp:1,dead:false});for(const L of world.loops)prepareLoopTrack(L);editorRebuildCollision();saveEditorScene(editorEra);}
+function editorEraseObject(wx,wy){editorPush();let best=null,bd=90;for(const L of world.loops||[]){const d=Math.hypot(wx-L.cx,wy-L.cy);if(d<bd){best={type:'loop',obj:L};bd=d;}}for(const r of world.rings||[]){const d=Math.hypot(wx-r.x,wy-r.y);if(d<bd){best={type:'ring',obj:r};bd=d;}}for(const o of world.objects||[]){const d=Math.hypot(wx-o.x,wy-(o.y-(o.type==='crate'?o.h/2:0)));if(d<bd){best={type:o.type,obj:o};bd=d;}}if(world.bridge){const d=Math.hypot(wx-(world.bridge.x+world.bridge.w/2),wy-world.bridge.y);if(d<bd){best={type:'bridge'};bd=d;}}if(world.generatorRock){const cx=(world.generatorRock.x1+world.generatorRock.x2)/2,d=Math.hypot(wx-cx,wy-world.generatorRock.top);if(d<bd){best={type:'generator'};bd=d;}}for(const b of world.barriers||[]){const inside=wx>=b.x&&wx<=b.x+b.w&&wy>=b.y&&wy<=b.y+b.h;if(inside){best={type:'barrier',obj:b};bd=0;break;}}if(best){if(best.type==='loop')world.loops=world.loops.filter(x=>x!==best.obj);if(best.type==='ring')world.rings=world.rings.filter(x=>x!==best.obj);if(['rock','tree','crate'].includes(best.type))world.objects=world.objects.filter(x=>x!==best.obj);if(best.type==='bridge'){world.bridge=null;world.waterGaps=(world.waterGaps||[]).filter(g=>!g.editorGap||!g.small);}if(best.type==='generator'){world.generatorRock=null;world.machines=[];}if(best.type==='barrier')world.barriers=world.barriers.filter(x=>x!==best.obj);editorRebuildCollision();saveEditorScene(editorEra);}}
 function editorMouseDown(e){if(!editorOpen)return;const r=canvas.getBoundingClientRect(),w=editorScreenToWorld(e.clientX-r.left,e.clientY-r.top);if(e.button===2){editorPanDrag={x:e.clientX,y:e.clientY,cameraX,cameraY};e.preventDefault();return;}if(editorMode==='move'){const n=editorNearestPoint(w.x,w.y);if(n.index>=0&&n.dist<65){editorPush();editorDragging={index:n.index};}}else if(editorMode==='signs'){const n=editorNearestSign(w.x,w.y);if(n.index>=0&&n.dist<90){if(e.shiftKey){editorPush();world.timeSigns.splice(n.index,1);saveEditorScene(editorEra);}else{editorPush();editorDragging={signIndex:n.index};}}}else if(editorMode==='add'||e.shiftKey){editorInsertPoint(w.x,w.y);}else if(editorMode==='delete'){editorDeletePoint(w.x,w.y);}else if(editorMode==='gap'){editorGapStart={x:w.x};}else if(editorMode==='object'){editorPlaceObject(w.x,w.y);}else if(editorMode==='eraseObject'){editorEraseObject(w.x,w.y);}e.preventDefault();}
 function editorMouseMove(e){if(!editorOpen)return;const r=canvas.getBoundingClientRect(),w=editorScreenToWorld(e.clientX-r.left,e.clientY-r.top);if(editorDragging){if(editorDragging.signIndex!=null)editorMoveSign(editorDragging.signIndex,w.x,w.y);else editorMovePoint(editorDragging.index,w.x,w.y);}if(editorPanDrag){cameraX=clamp(editorPanDrag.cameraX-(e.clientX-editorPanDrag.x),-200,Math.max(-200,world.width-W+250));cameraY=clamp(editorPanDrag.cameraY-(e.clientY-editorPanDrag.y),-200,600);}}
 function editorMouseUp(e){if(!editorOpen)return;if(editorMode==='gap'&&editorGapStart){const r=canvas.getBoundingClientRect(),w=editorScreenToWorld(e.clientX-r.left,e.clientY-r.top);editorSplitGap(editorGapStart.x,w.x);editorGapStart=null;}editorDragging=null;if(e.button===2)editorPanDrag=null;}
@@ -1790,7 +1867,7 @@ document.getElementById('editorLoad').addEventListener('click',()=>{const v=loca
 document.getElementById('editorExport').addEventListener('click',()=>{saveEditorScene(editorEra);const blob=new Blob([JSON.stringify(timelineEditorData,null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='sonic-four-eras-level.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),500);});
 document.getElementById('editorPlay').addEventListener('click',()=>{saveEditorScene(editorEra);editorExit();reset();});document.getElementById('editorClose').addEventListener('click',editorExit);
 addEventListener('keydown',e=>{if(e.key.toLowerCase()==='e'&&!e.ctrlKey&&!e.metaKey){editorOpen?editorExit():editorEnter();e.preventDefault();}if(editorOpen&&editorFreeCam){const k=e.key.toLowerCase(),step=e.shiftKey?32:12;if(['arrowleft','a'].includes(k))cameraX-=step;if(['arrowright','d'].includes(k))cameraX+=step;if(['arrowup','w'].includes(k))cameraY-=step;if(['arrowdown','s'].includes(k))cameraY+=step;if(['home'].includes(k)){cameraX=0;cameraY=0;}cameraX=clamp(cameraX,-200,Math.max(-200,world.width-W+250));cameraY=clamp(cameraY,-200,600);}});
-function drawEditorOverlay(){if(!editorOpen)return;ctx.save();ctx.fillStyle='rgba(0,0,0,.12)';ctx.fillRect(0,0,W,H);const sections=getEditorSections();sections.forEach((pts,si)=>{if(!pts)return;ctx.strokeStyle=si===editorSection?'#ffe24a':'rgba(255,255,255,.55)';ctx.lineWidth=si===editorSection?4:2;ctx.beginPath();pts.forEach((q,i)=>{const x=sx(q.x),y=sy(q.y);if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);});ctx.stroke();pts.forEach((q,i)=>{const x=sx(q.x),y=sy(q.y);ctx.fillStyle=si===editorSection?'#ffdf36':'#fff';ctx.beginPath();ctx.arc(x,y,7,0,Math.PI*2);ctx.fill();ctx.strokeStyle='#111';ctx.lineWidth=2;ctx.stroke();ctx.fillStyle='#111';ctx.font='9px monospace';ctx.fillText(String(i),x+9,y-9);});});for(const g of world.waterGaps||[]){ctx.fillStyle='rgba(40,180,220,.25)';ctx.fillRect(sx(g.x),0,g.w,H);ctx.strokeStyle='#45d7ff';ctx.setLineDash([8,6]);ctx.strokeRect(sx(g.x),80,g.w,H-160);ctx.setLineDash([]);}for(const s of world.timeSigns||[]){const x=sx(s.x),y=sy(s.y);ctx.strokeStyle=s.type==='past'?'#e1a25a':'#70d7ff';ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(x,y+28);ctx.lineTo(x,y-30);ctx.stroke();ctx.fillStyle=s.type==='past'?'#7b442c':'#3a8db3';ctx.fillRect(x-34,y-42,68,24);ctx.fillStyle='#fff';ctx.font='bold 10px monospace';ctx.textAlign='center';ctx.fillText(s.type.toUpperCase(),x,y-26);ctx.textAlign='left';}for(const L of world.loops||[]){ctx.strokeStyle='#ff8cff';ctx.lineWidth=3;ctx.beginPath();ctx.arc(sx(L.cx),sy(L.cy),L.r,0,Math.PI*2);ctx.stroke();}if(world.bridge){ctx.strokeStyle='#66d9ff';ctx.lineWidth=4;ctx.strokeRect(sx(world.bridge.x),sy(world.bridge.y),world.bridge.w,world.bridge.h);}if(world.generatorRock){ctx.strokeStyle='#ff9d4d';ctx.lineWidth=4;ctx.strokeRect(sx(world.generatorRock.x1),sy(world.generatorRock.top),world.generatorRock.x2-world.generatorRock.x1,80);}for(const b of world.barriers||[]){ctx.fillStyle='rgba(220,80,80,.8)';ctx.fillRect(sx(b.x),sy(b.y),b.w,b.h);ctx.strokeStyle='#ffdfdf';ctx.lineWidth=2;ctx.strokeRect(sx(b.x),sy(b.y),b.w,b.h);ctx.fillStyle='#fff';ctx.font='bold 9px monospace';ctx.fillText('BARRIER',sx(b.x)+4,sy(b.y)+14);}ctx.fillStyle='#fff';ctx.font='bold 13px monospace';ctx.fillText('EDITOR: E close | Right-drag/WASD = FREE CAM | Shift+click = ADD POINT | Current ERA: '+editorEra.toUpperCase(),14,H-18);ctx.restore();}
+function drawEditorOverlay(){if(!editorOpen)return;ctx.save();ctx.fillStyle='rgba(0,0,0,.12)';ctx.fillRect(0,0,W,H);const sections=getEditorSections();sections.forEach((pts,si)=>{if(!pts)return;ctx.strokeStyle=si===editorSection?'#ffe24a':'rgba(255,255,255,.55)';ctx.lineWidth=si===editorSection?4:2;ctx.beginPath();pts.forEach((q,i)=>{const x=sx(q.x),y=sy(q.y);if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);});ctx.stroke();pts.forEach((q,i)=>{const x=sx(q.x),y=sy(q.y);ctx.fillStyle=si===editorSection?'#ffdf36':'#fff';ctx.beginPath();ctx.arc(x,y,7,0,Math.PI*2);ctx.fill();ctx.strokeStyle='#111';ctx.lineWidth=2;ctx.stroke();ctx.fillStyle='#111';ctx.font='9px monospace';ctx.fillText(String(i),x+9,y-9);});});for(const g of world.waterGaps||[]){ctx.fillStyle='rgba(40,180,220,.25)';ctx.fillRect(sx(g.x),0,g.w,H);ctx.strokeStyle='#45d7ff';ctx.setLineDash([8,6]);ctx.strokeRect(sx(g.x),80,g.w,H-160);ctx.setLineDash([]);}for(const s of world.timeSigns||[]){const x=sx(s.x),y=sy(s.y);ctx.strokeStyle=s.type==='past'?'#e1a25a':'#70d7ff';ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(x,y+28);ctx.lineTo(x,y-30);ctx.stroke();ctx.fillStyle=s.type==='past'?'#7b442c':'#3a8db3';ctx.fillRect(x-34,y-42,68,24);ctx.fillStyle='#fff';ctx.font='bold 10px monospace';ctx.textAlign='center';ctx.fillText(s.type.toUpperCase(),x,y-26);ctx.textAlign='left';}for(const L of world.loops||[]){ctx.strokeStyle='#ff8cff';ctx.lineWidth=3;ctx.beginPath();ctx.ellipse(sx(L.cx),sy(L.cy),L.rx||L.r,L.ry||L.r,0,0,Math.PI*2);ctx.stroke();}if(world.bridge){ctx.strokeStyle='#66d9ff';ctx.lineWidth=4;ctx.strokeRect(sx(world.bridge.x),sy(world.bridge.y),world.bridge.w,world.bridge.h);}if(world.generatorRock){ctx.strokeStyle='#ff9d4d';ctx.lineWidth=4;ctx.strokeRect(sx(world.generatorRock.x1),sy(world.generatorRock.top),world.generatorRock.x2-world.generatorRock.x1,80);}for(const r of world.rings||[]){ctx.strokeStyle='#ffd72a';ctx.lineWidth=3;ctx.beginPath();ctx.arc(sx(r.x),sy(r.y),10,0,Math.PI*2);ctx.stroke();}for(const o of world.objects||[]){const x=sx(o.x),y=sy(o.y);if(o.type==='rock'){ctx.strokeStyle='#b7c2c0';ctx.strokeRect(x-38,y-44,76,44);}if(o.type==='tree'){ctx.strokeStyle='#64d17a';ctx.strokeRect(x-30,y-100,60,100);}if(o.type==='crate'){ctx.strokeStyle='#ffb45e';ctx.strokeRect(x-o.w/2,y-o.h,o.w,o.h);}}for(const b of world.barriers||[]){ctx.fillStyle='rgba(220,80,80,.8)';ctx.fillRect(sx(b.x),sy(b.y),b.w,b.h);ctx.strokeStyle='#ffdfdf';ctx.lineWidth=2;ctx.strokeRect(sx(b.x),sy(b.y),b.w,b.h);ctx.fillStyle='#fff';ctx.font='bold 9px monospace';ctx.fillText('BARRIER',sx(b.x)+4,sy(b.y)+14);}ctx.fillStyle='#fff';ctx.font='bold 13px monospace';ctx.fillText('EDITOR: E close | Right-drag/WASD = FREE CAM | Shift+click = ADD POINT | Current ERA: '+editorEra.toUpperCase(),14,H-18);ctx.restore();}
 
 let last=performance.now();
 let runtimeError=null;
