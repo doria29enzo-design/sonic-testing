@@ -364,44 +364,38 @@ const MUSIC_FILES={
   goodFutureClear:MUSIC_BASE+'FantasticFuji_GoodFutureClear.mp3'
 };
 let musicEnabled=true,musicVolume=.35,musicEra='present',musicCurrentKey=null,musicCurrent=null;
-let musicStarted=false,musicPendingKey=null;
-const musicPlayers={};
+let musicStarted=false,musicPendingKey=null,musicUserInteracted=false;
+// Use one persistent audio element. Browsers, including GitHub Pages' hosted
+// Chrome/Safari sessions, are much more reliable when a later track is loaded
+// into the same media element that was started by the user's first interaction.
+const musicPlayer=new Audio();
+musicPlayer.preload='auto';
+musicPlayer.volume=musicVolume;
+musicPlayer.addEventListener('error',()=>{
+  if(musicCurrentKey) musicPendingKey=musicCurrentKey;
+});
 
 function musicFile(key){return MUSIC_FILES[key]||MUSIC_FILES.present;}
-function musicMake(key,loop=true){
-  if(musicPlayers[key]){
-    const a=musicPlayers[key];
-    a.loop=loop;a.volume=musicVolume;
-    return a;
-  }
-  const a=new Audio();
-  a.src=musicFile(key);
-  a.loop=loop;
-  a.preload='auto';
-  a.volume=musicVolume;
-  musicPlayers[key]=a;
-  return a;
-}
 function musicStopCurrent(){
-  if(musicCurrent){
-    musicCurrent.pause();
-    musicCurrent.currentTime=0;
-  }
+  musicPlayer.pause();
+  try{musicPlayer.currentTime=0;}catch(e){}
   musicCurrent=null;musicCurrentKey=null;
 }
 function musicPlay(key,loop=true,reset=true){
   if(!musicEnabled)return;
-  const a=musicMake(key,loop);
-  if(musicCurrent && musicCurrent!==a){
-    musicCurrent.pause();
-    musicCurrent.currentTime=0;
+  key=key||'present';
+  const needsSource=musicCurrentKey!==key || !musicPlayer.src || !musicPlayer.src.endsWith(musicFile(key));
+  if(needsSource){
+    musicPlayer.pause();
+    musicPlayer.src=musicFile(key);
+    musicPlayer.load();
   }
-  musicCurrent=a;
+  musicPlayer.loop=loop;
+  musicPlayer.volume=musicVolume;
+  musicCurrent=musicPlayer;
   musicCurrentKey=key;
-  a.loop=loop;
-  a.volume=musicVolume;
-  if(reset)a.currentTime=0;
-  const promise=a.play();
+  if(reset){try{musicPlayer.currentTime=0;}catch(e){}}
+  const promise=musicPlayer.play();
   if(promise&&typeof promise.catch==='function'){
     promise.then(()=>{
       musicStarted=true;
@@ -422,7 +416,8 @@ function musicSetEra(key){
   // Always switch tracks when the timeline changes. This is deliberately
   // separate from the editor so GitHub Pages can use the same relative paths.
   if(musicEnabled && !levelComplete){
-    musicPlay(musicEra,true,true);
+    if(musicUserInteracted) musicPlay(musicEra,true,true);
+    else musicPendingKey=musicEra;
   }
 }
 function musicPlayClear(good){
@@ -448,14 +443,15 @@ function musicInitUI(){
   if(btn)btn.addEventListener('click',e=>{e.stopPropagation();musicToggle();});
   if(vol)vol.addEventListener('input',e=>{
     musicVolume=Number(e.target.value);
-    for(const a of Object.values(musicPlayers))a.volume=musicVolume;
+    musicPlayer.volume=musicVolume;
   });
   const start=()=>{
+    musicUserInteracted=true;
     if(!musicEnabled || levelComplete)return;
     if(musicPendingKey) musicPlay(musicPendingKey,true,false);
     else if(!musicCurrent || musicCurrent.paused) musicPlay(musicEra,true,false);
   };
-  window.addEventListener('pointerdown',start);
+  window.addEventListener('pointerdown',start,{passive:true});
   window.addEventListener('keydown',start);
 }
 musicInitUI();
